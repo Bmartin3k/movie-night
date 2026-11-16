@@ -130,6 +130,8 @@ function watchedCard(m) {
 function suggestionCard(m, kind) {
   let why = "";
   if (m.reason) why = `<div class="why">${esc(m.reason)}</div>`;
+  if (kind === "watchlist" && m.saved_for_names?.length)
+    why = `<div class="loved">Saved for ${m.saved_for_names.length === state.people.length && state.people.length > 1 ? "everyone" : m.saved_for_names.map(esc).join(", ")}</div>` + why;
   else {
     if (m.loved_by) why += `<div class="loved">${m.loved_by.map((l) => `${esc(l.name)} rated it ${fmtR(l.rating)}`).join(", ")}</div>`;
     if (m.because && m.because.length) {
@@ -627,17 +629,19 @@ const claudeResults = [];
 function renderForChips() {
   const sel = new Set(groupIds());
   const everyone = sel.size === state.people.length;
-  $("#for-chips").innerHTML = (state.people.length > 1 ? `<button class="chip ${everyone ? "on" : ""}" data-all="1">👪 Everyone</button>` : "")
+  const chips = (state.people.length > 1 ? `<button class="chip ${everyone ? "on" : ""}" data-all="1">👪 Everyone</button>` : "")
     + state.people.map((p) => `<button class="chip ${sel.has(p.id) && !everyone ? "on" : ""}" data-pid="${p.id}">${esc(p.emoji || "")} ${esc(p.name)}</button>`).join("");
+  $$(".for-chips").forEach((el) => (el.innerHTML = chips));   // Suggestions and Watchlist share one selection
   $("#for-label").textContent = groupLabel();
   const order = ["G", "PG", "PG-13", "R", "NC-17"];
   const kids = groupIds().map(person).filter((p) => p && p.max_cert);
   const lim = kids.length ? kids.map((p) => p.max_cert).sort((a, b) => order.indexOf(a) - order.indexOf(b))[0] : null;
-  const note = $("#kid-note");
-  note.hidden = !lim;
-  if (lim) note.textContent = `👶 Kid-safe: only ${lim === "G" ? "G" : `${lim} and under`}, because ${kids.map((p) => p.name).join(" & ")} ${kids.length > 1 ? "are" : "is"} included.`;
+  for (const note of [$("#kid-note"), $("#wl-kid-note")]) {
+    note.hidden = !lim;
+    if (lim) note.textContent = `👶 Kid-safe: only ${lim === "G" ? "G" : `${lim} and under`}, because ${kids.map((p) => p.name).join(" & ")} ${kids.length > 1 ? "are" : "is"} included.`;
+  }
 }
-$("#for-chips").addEventListener("click", (e) => {
+const onForChip = (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   if (b.dataset.all) state.group = [];
@@ -651,8 +655,10 @@ $("#for-chips").addEventListener("click", (e) => {
   lsSet("group", JSON.stringify(state.group));
   renderForChips();
   claudeResults.length = 0; renderClaude();
-  loadSuggestions(true);
-});
+  if (!$("#tab-suggest").hidden) loadSuggestions(true); else state.suggestionsKey = null;
+  loadWatchlist();
+};
+$$(".for-chips").forEach((el) => el.addEventListener("click", onForChip));
 function renderSuggestions() {
   const g = $("#genre-filter").value;
   const fb = $("#fresh-only");
@@ -794,7 +800,7 @@ async function onSuggestionClick(e) {
       else {
         const reason = m.reason || (m.because?.length ? "Because of " + m.because.map((b) => b.title).join(", ") : "")
           || (m.loved_by ? m.loved_by.map((l) => `${l.name} rated it ${fmtR(l.rating)}`).join(", ") : "");
-        await api("/watchlist", { method: "POST", body: { ...m, reason } }); m.saved = true;
+        await api("/watchlist", { method: "POST", body: { ...m, reason, people: groupIds() } }); m.saved = true;
       }
       btn.textContent = m.saved ? "★ Saved" : "☆ Save";
       loadWatchlist();
@@ -834,11 +840,12 @@ async function fillRadarr() {
   } catch (err) { btns.forEach((b) => { b.textContent = "Radarr unavailable"; b.title = err.message; }); }
 }
 async function loadWatchlist() {
-  state.watchlist = await api("/watchlist");
+  state.watchlist = await api("/watchlist?people=" + groupIds().join(","));
   $("#watchlist-grid").innerHTML = state.watchlist.map((m) => suggestionCard(m, "watchlist")).join("");
   fillRT($("#watchlist-grid"));
   fillRadarr();
   $("#watchlist-empty").hidden = state.watchlist.length > 0;
+  $("#watchlist-empty").innerHTML = `Nothing saved for ${esc(groupLabel())} that they haven't seen. Save suggestions here with <b>☆ Save</b>.`;
   $("#count-watchlist").textContent = state.watchlist.length || "";
 }
 
@@ -1017,6 +1024,7 @@ function showTab(name) {
   $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   $$(".panel").forEach((p) => (p.hidden = p.id !== "tab-" + name));
   if (name === "suggest") loadSuggestions(false);
+  if (name === "watchlist") renderForChips();
   lsSet("tab", name);
 }
 $$(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));

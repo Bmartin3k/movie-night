@@ -168,6 +168,9 @@ def _migrate(conn):
     if "source" not in [r[1] for r in conn.execute("PRAGMA table_info(movies)")] and \
             "rating" not in [r[1] for r in conn.execute("PRAGMA table_info(movies)")]:
         conn.execute("ALTER TABLE movies ADD COLUMN source TEXT")
+    # watchlist: who it was saved for (JSON list of person ids; NULL = everyone, from before this existed)
+    if "saved_for" not in [r[1] for r in conn.execute("PRAGMA table_info(watchlist)")]:
+        conn.execute("ALTER TABLE watchlist ADD COLUMN saved_for TEXT")
     # Netflix import: where a queued movie came from
     if "source" not in [r[1] for r in conn.execute("PRAGMA table_info(emby_queue)")]:
         conn.execute("ALTER TABLE emby_queue ADD COLUMN source TEXT NOT NULL DEFAULT 'emby'")
@@ -937,8 +940,24 @@ def rematch_queued(emby_id):
 # ---------------------------------------------------------------- routes: watchlist / dismiss
 @app.get("/api/watchlist")
 def get_watchlist():
-    rows = db().execute("SELECT * FROM watchlist ORDER BY created_at DESC")
-    return jsonify([dict(r) for r in rows])
+    """The watchlist for the people selected (?people=1,4; empty = everyone): movies saved for anyone in
+    the group, minus what someone in the group has already seen, and (with a kid in the group) anything
+    over the kid's rating limit. Without ?people it returns everything."""
+    conn = db()
+    names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people")}
+    rows = []
+    for r in conn.execute("SELECT * FROM watchlist ORDER BY created_at DESC"):
+        d = dict(r)
+        d["saved_for"] = json.loads(d["saved_for"]) if d.get("saved_for") else None
+        d["saved_for_names"] = [names[p] for p in (d["saved_for"] or []) if p in names]
+        rows.append(d)
+    if "people" not in request.args:
+        return jsonify(rows)
+    group = set(selected_people(conn, request.args.get("people")))
+    seen = excluded_ids(conn, group)
+    rows = [d for d in rows if (d["saved_for"] is None or group & set(d["saved_for"])) and d["tmdb_id"] not in seen]
+    limit = group_limit(conn, list(group))
+    return jsonify(apply_cert_limit(rows, limit, keep=len(rows)) if limit and TMDB_KEY else rows)
 
 
 @app.post("/api/watchlist")
@@ -947,10 +966,16 @@ def add_watchlist():
     if not b.get("tmdb_id") or not b.get("title"):
         return jsonify(error="tmdb_id and title required"), 400
     conn = db()
+    # who it's for: the people selected when it was saved; saving it again for others adds them
+    valid = {r[0] for r in conn.execute("SELECT id FROM people")}
+    people = {int(p) for p in (b.get("people") or []) if str(p).isdigit() and int(p) in valid} or set(valid)
+    old = conn.execute("SELECT saved_for FROM watchlist WHERE tmdb_id=?", (b["tmdb_id"],)).fetchone()
+    if old and old[0]:
+        people |= set(json.loads(old[0]))
     conn.execute(
-        "INSERT OR REPLACE INTO watchlist (tmdb_id,title,year,poster_path,overview,reason,created_at) VALUES (?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO watchlist (tmdb_id,title,year,poster_path,overview,reason,created_at,saved_for) VALUES (?,?,?,?,?,?,?,?)",
         (b["tmdb_id"], b["title"], b.get("year"), b.get("poster_path"), b.get("overview", ""),
-         b.get("reason", ""), int(time.time())),
+         b.get("reason", ""), int(time.time()), json.dumps(sorted(people))),
     )
     conn.commit()
     return "", 204

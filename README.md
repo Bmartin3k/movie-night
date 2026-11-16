@@ -64,7 +64,10 @@ then get suggestions for one person or any group watching together.
 - **Wrong movie?** (on To rate cards, and in a Watched movie's dialog): search and pick the right one, e.g.
   RoboCop 1987 instead of 2014. Ratings and watchers carry over (merging if the right one is already rated),
   and the fix is remembered so later Emby syncs / Netflix / CSV imports use it. Switching back undoes it.
-- **Watchlist**: suggestions saved with ☆ Save. Marking one "Watched it" moves it to Watched. With Radarr set up,
+- **Watchlist**: suggestions saved with ☆ Save, remembered as saved *for* the people selected at the time
+  (saving it again for others adds them). It has the same "for" chips as Suggestions (one shared selection) and shows
+  what was saved for anyone selected, minus what someone selected has already seen and, with a kid included, anything
+  over their rating limit. Marking one "Watched it" moves it to Watched. With Radarr set up,
   each card shows whether Radarr has it (✓ Downloaded / ⏳ searching) or a **⬇ Request in Radarr** button that adds it
   (monitored, with a search) using your first quality profile and root folder, or the ones set in `.env`.
 
