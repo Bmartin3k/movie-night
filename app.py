@@ -33,13 +33,18 @@ EMBY_KEY = os.environ.get("EMBY_API_KEY", "").strip()
 # Optional comma list of Emby user names to import; empty = every user
 EMBY_USERS = [u.strip().lower() for u in os.environ.get("EMBY_USERS", "").split(",") if u.strip()]
 EMBY_SYNC_HOURS = float(os.environ.get("EMBY_SYNC_HOURS", "6"))
-OMDB_KEY = os.environ.get("OMDB_API_KEY", "").strip()
+OMDB_KEY = os.environ.get("OMDB_API_KEY", "").strip()   # optional: Rotten Tomatoes / Metacritic via omdbapi.com
+# Critic scores barely change once a movie has been out a while, and OMDb's free tier is 1,000 lookups a day:
+# keep settled scores for 90 days; new releases and "no score yet" get re-checked after 14.
+OMDB_TTL_SETTLED = 90 * 24 * 3600
+OMDB_TTL_NEW = 14 * 24 * 3600
+BACKUP_KEEP = int(os.environ.get("BACKUP_KEEP", "14"))   # nightly copies of the database to keep; 0 = no backups
 # Optional Radarr: "Request in Radarr" on watchlist cards
 RADARR_URL = os.environ.get("RADARR_URL", "").strip().rstrip("/")
 RADARR_KEY = os.environ.get("RADARR_API_KEY", "").strip()
 RADARR_PROFILE = os.environ.get("RADARR_QUALITY_PROFILE", "").strip()   # name or id; default: the first one
 RADARR_ROOT = os.environ.get("RADARR_ROOT_FOLDER", "").strip()          # path; default: the first one
-DISMISS_WEIGHT = 0.25 * (2 - 5.5)     # a dismissed pick pulls like a quarter of a 1★ (2/10) rating: -0.875   # optional: Rotten Tomatoes scores via omdbapi.com
+DISMISS_WEIGHT = 0.25 * (2 - 5.5)     # a dismissed pick pulls like a quarter of a 1★ (2/10) rating: -0.875
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -314,6 +319,43 @@ def remember_remap(conn, old, new):
         conn.execute("UPDATE tmdb_remap SET to_id=? WHERE to_id=?", (new, old))  # A->B then B->C => A->C
 
 
+def saved_map(conn):
+    """{tmdb_id: {person ids it's on the watchlist for}} (rows from before "saved for" existed = everyone)."""
+    everyone = {r[0] for r in conn.execute("SELECT id FROM people")}
+    return {r[0]: (set(json.loads(r[1])) & everyone if r[1] else set(everyone))
+            for r in conn.execute("SELECT tmdb_id, saved_for FROM watchlist")}
+
+
+def watchlist_drop(conn, tmdb_id, people):
+    """Take a watchlist movie off these people's lists; the entry goes once it's saved for nobody."""
+    cur = saved_map(conn).get(tmdb_id)
+    if cur is None:
+        return
+    left = cur - set(people)
+    if left:
+        conn.execute("UPDATE watchlist SET saved_for=? WHERE tmdb_id=?", (json.dumps(sorted(left)), tmdb_id))
+    else:
+        conn.execute("DELETE FROM watchlist WHERE tmdb_id=?", (tmdb_id,))
+
+
+def watchlist_prune(conn, tmdb_id=None):
+    """A watchlist movie comes off the list of anyone who has now seen (or skipped) it, and of people who
+    no longer exist. It stays for everyone else it was saved for."""
+    for tid in ([tmdb_id] if tmdb_id else list(saved_map(conn))):
+        if not tid:
+            continue
+        seen = {r[0] for r in conn.execute(
+            "SELECT w.person_id FROM watches w JOIN movies m ON m.id=w.movie_id WHERE m.tmdb_id=?", (tid,))}
+        seen |= {r[0] for r in conn.execute("SELECT person_id FROM skipped WHERE tmdb_id=?", (tid,))}
+        row = conn.execute("SELECT saved_for FROM watchlist WHERE tmdb_id=?", (tid,)).fetchone()
+        if row is None:
+            continue
+        valid = {r[0] for r in conn.execute("SELECT id FROM people")}
+        stale = (set(json.loads(row[0])) - valid) if row[0] else set()
+        if seen or stale or not saved_map(conn).get(tid):
+            watchlist_drop(conn, tid, seen | stale)
+
+
 def tmdb_details(tid):
     d = slim(tmdb_get(f"/movie/{int(tid)}"))
     return d
@@ -412,28 +454,33 @@ def radarr_state(m):
 _omdb_pause_until = 0.0     # set when OMDb rejects the key or the daily limit is hit
 
 
-NO_SCORES = {"rt": None, "mc": None}
+# "couldn't look it up right now" (no key, daily limit, network): not cached, and the page asks again later
+NO_SCORES = {"rt": None, "mc": None, "pending": True}
 
 
 def critic_scores(tid):
     """Rotten Tomatoes Tomatometer ("92%") and Metacritic Metascore (74) for a TMDB id, from one OMDb
-    lookup by IMDb id (from TMDB). Either can be None. Results, including "no score", are cached for a
-    week to stay under OMDb's daily limit."""
+    lookup by IMDb id (from TMDB). Either can be None. Results are cached to stay under OMDb's daily
+    limit: 90 days once a movie has been out a year and has a score, 14 days for new releases and for
+    "no score yet". A result with "pending" means it couldn't be looked up just now."""
     global _omdb_pause_until
     key = f"omdb:{int(tid)}"
     conn = connect()
     try:
         hit = conn.execute("SELECT value, fetched_at FROM cache WHERE key=?", (key,)).fetchone()
-        if hit and time.time() - hit["fetched_at"] < CACHE_TTL:
+        if hit:
             v = json.loads(hit["value"])
-            if "mc" in v:                 # entries from before Metacritic was stored get looked up again
-                return v
+            has = bool(v.get("rt")) or v.get("mc") is not None
+            ttl = v.get("ttl") or (OMDB_TTL_SETTLED if has else OMDB_TTL_NEW)
+            if "mc" in v and time.time() - hit["fetched_at"] < ttl:
+                return {"rt": v["rt"], "mc": v["mc"]}
         if not OMDB_KEY or time.time() < _omdb_pause_until:
             return NO_SCORES
         try:
-            imdb = tmdb_get(f"/movie/{int(tid)}").get("imdb_id")
+            details = tmdb_get(f"/movie/{int(tid)}")
         except TMDBError:
             return NO_SCORES
+        imdb = details.get("imdb_id")
         rt = mc = None
         if imdb:
             try:
@@ -447,9 +494,14 @@ def critic_scores(tid):
                 return NO_SCORES
             rt = next((r["Value"] for r in d.get("Ratings") or [] if r.get("Source") == "Rotten Tomatoes"), None)
             mc = int(d["Metascore"]) if str(d.get("Metascore", "")).isdigit() else None
+        try:
+            settled = (date.today() - date.fromisoformat(details.get("release_date") or "")).days > 365
+        except ValueError:
+            settled = False
         v = {"rt": rt, "mc": mc}
+        ttl = OMDB_TTL_SETTLED if settled and (rt or mc is not None) else OMDB_TTL_NEW
         conn.execute("INSERT OR REPLACE INTO cache (key, value, fetched_at) VALUES (?,?,?)",
-                     (key, json.dumps(v), int(time.time())))
+                     (key, json.dumps({**v, "ttl": ttl}), int(time.time())))
         conn.commit()
         return v
     finally:
@@ -562,8 +614,8 @@ def rt_scores():
     ids = [int(x) for x in request.args.get("ids", "").split(",") if x.strip().isdigit()][:80]
     if not OMDB_KEY or not ids:
         return jsonify({})
-    with ThreadPoolExecutor(8) as ex:
-        return jsonify(dict(zip(map(str, ids), ex.map(critic_scores, ids))))
+    with ThreadPoolExecutor(8) as ex:      # ids that couldn't be looked up right now are left out, so the page retries later
+        return jsonify({str(i): s for i, s in zip(ids, ex.map(critic_scores, ids)) if not s.get("pending")})
 
 
 @app.get("/api/radarr/status")
@@ -618,7 +670,7 @@ def status():
     pending = conn.execute("SELECT COUNT(*) FROM emby_queue WHERE status='pending'").fetchone()[0]
     return jsonify(tmdb=bool(TMDB_KEY), claude=bool(os.environ.get("ANTHROPIC_API_KEY")),
                    emby=bool(EMBY_URL and EMBY_KEY), rt=bool(OMDB_KEY), radarr=bool(RADARR_URL and RADARR_KEY), emby_last_sync=json.loads(last[0]) if last else None,
-                   emby_pending=pending, people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
+                   emby_pending=pending, last_backup=last_backup(), people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
 
 
 @app.get("/api/search")
@@ -738,6 +790,7 @@ def update_person(pid):
 def delete_person(pid):
     conn = db()
     conn.execute("DELETE FROM people WHERE id=?", (pid,))   # their ratings go with them (cascade)
+    watchlist_prune(conn)                                    # and their watchlist saves
     conn.commit()
     return "", 204
 
@@ -827,13 +880,13 @@ def add_movie():
         conn.rollback()
         return jsonify(error=str(e)), 400
     if m["tmdb_id"]:
-        conn.execute("DELETE FROM watchlist WHERE tmdb_id=?", (m["tmdb_id"],))
         # it was waiting in To rate: keep the Emby/Netflix watchers as 'seen'
         for q in conn.execute("SELECT watched_by, watched_on FROM emby_queue WHERE tmdb_id=?", (m["tmdb_id"],)).fetchall():
             for pid in queue_watchers(conn, q[0], m["tmdb_id"], watched_on=q[1])[0]:
                 conn.execute("INSERT OR IGNORE INTO watches (movie_id, person_id, rating, notes, updated_at) "
                              "VALUES (?,?,NULL,'',?)", (cur.lastrowid, pid, int(time.time())))
         conn.execute("DELETE FROM emby_queue WHERE tmdb_id=?", (m["tmdb_id"],))
+        watchlist_prune(conn, m["tmdb_id"])       # off the watchlist for whoever has now seen it
     conn.commit()
     return jsonify(movie_with_watches(conn, conn.execute("SELECT * FROM movies WHERE id=?", (cur.lastrowid,)))[0]), 201
 
@@ -851,6 +904,7 @@ def update_movie(mid):
     except (ValueError, TypeError) as e:
         conn.rollback()
         return jsonify(error=str(e)), 400
+    watchlist_prune(conn, conn.execute("SELECT tmdb_id FROM movies WHERE id=?", (mid,)).fetchone()[0])
     conn.commit()
     return jsonify(movie_with_watches(conn, conn.execute("SELECT * FROM movies WHERE id=?", (mid,)))[0])
 
@@ -949,7 +1003,7 @@ def get_watchlist():
     for r in conn.execute("SELECT * FROM watchlist ORDER BY created_at DESC"):
         d = dict(r)
         d["saved_for"] = json.loads(d["saved_for"]) if d.get("saved_for") else None
-        d["saved_for_names"] = [names[p] for p in (d["saved_for"] or []) if p in names]
+        d["saved_for_names"] = [names[p] for p in (d["saved_for"] if d["saved_for"] is not None else names) if p in names]
         rows.append(d)
     if "people" not in request.args:
         return jsonify(rows)
@@ -983,8 +1037,13 @@ def add_watchlist():
 
 @app.delete("/api/watchlist/<int:tmdb_id>")
 def del_watchlist(tmdb_id):
+    """?people=1,4 takes it off those people's lists only (it stays for anyone else it was saved for);
+    without ?people it's removed for everyone."""
     conn = db()
-    conn.execute("DELETE FROM watchlist WHERE tmdb_id=?", (tmdb_id,))
+    if request.args.get("people"):
+        watchlist_drop(conn, tmdb_id, selected_people(conn, request.args.get("people")))
+    else:
+        conn.execute("DELETE FROM watchlist WHERE tmdb_id=?", (tmdb_id,))
     conn.commit()
     return "", 204
 
@@ -1083,7 +1142,7 @@ def suggestions():
     if not seeds:
         return jsonify([])
     skip = excluded_ids(conn, group)
-    saved = {r[0] for r in conn.execute("SELECT tmdb_id FROM watchlist")}
+    saved = saved_map(conn)
 
     # the strongest seeds first, capped so a big library doesn't fan out into hundreds of calls
     ranked = sorted(seeds.items(), key=lambda kv: -abs(sum(r for _, r in kv[1]["in"]) / len(kv[1]["in"]) - 5.5))[:80]
@@ -1163,7 +1222,7 @@ def suggestions():
         item["score"] = round(item["score"] + (best - 5.5) * 1.5 * (0.5 if group_limit(conn, group) else 1), 2)
         item["loved_by"] = [{"name": n, "rating": rt} for n, rt in e["fans"]]
     for o in out:
-        o["saved"] = o["tmdb_id"] in saved
+        o["saved"] = set(group) <= saved.get(o["tmdb_id"], set())   # saved for everyone selected
     out.sort(key=lambda x: x["score"], reverse=True)
     # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
     # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
@@ -1174,6 +1233,8 @@ def suggestions():
         top = [o for o in out if o.get("tmdb_id")]
         with ThreadPoolExecutor(max_workers=8) as pool:
             for o, s_ in zip(top, pool.map(lambda o: critic_scores(o["tmdb_id"]), top)):
+                if s_.get("pending"):
+                    continue
                 o["rt"], o["mc"] = s_["rt"], s_["mc"]
                 o["score"] = round(o["score"] * critic_factor(s_, strength), 2)
         out.sort(key=lambda x: x["score"], reverse=True)
@@ -1343,12 +1404,12 @@ def claude_suggestions():
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         items = list(pool.map(resolve, picks))
-    saved_ids = {r[0] for r in conn.execute("SELECT tmdb_id FROM watchlist")}
+    saved_ids = saved_map(conn)
     out = [i for i in items
            if not (i["tmdb_id"] and i["tmdb_id"] in skip)
            and (i["title"].lower(), i["year"]) not in watched_titles]
     for i in out:
-        i["saved"] = i["tmdb_id"] in saved_ids
+        i["saved"] = bool(i["tmdb_id"]) and set(group) <= saved_ids.get(i["tmdb_id"], set())
     if limit and TMDB_KEY:   # double-check Claude against the real ratings
         out = apply_cert_limit(out, limit, keep=len(out))
     return jsonify(out)
@@ -1886,6 +1947,7 @@ def mark():
         conn.execute("DELETE FROM not_watched WHERE tmdb_id=? AND person_id=?", (tid, pid))
     elif act == "skip":
         conn.execute("INSERT OR IGNORE INTO skipped VALUES (?,?,?)", (tid, pid, now))
+        watchlist_prune(conn, tid)
     elif act == "undo_skip":
         conn.execute("DELETE FROM skipped WHERE tmdb_id=? AND person_id=?", (tid, pid))
     else:
@@ -1939,7 +2001,7 @@ def emby_resolve(emby_id):
         return jsonify(error=str(e)), 400
     conn.execute("DELETE FROM emby_queue WHERE emby_id=?", (emby_id,))
     if q["tmdb_id"]:
-        conn.execute("DELETE FROM watchlist WHERE tmdb_id=?", (q["tmdb_id"],))
+        watchlist_prune(conn, q["tmdb_id"])
     conn.commit()
     return "", 204
 
@@ -1976,7 +2038,7 @@ def emby_rate(emby_id):
                   + [{"person_id": pid, "rating": r}])
     conn.execute("DELETE FROM emby_queue WHERE emby_id=?", (emby_id,))
     if q["tmdb_id"]:
-        conn.execute("DELETE FROM watchlist WHERE tmdb_id=?", (q["tmdb_id"],))
+        watchlist_prune(conn, q["tmdb_id"])
     conn.commit()
     return "", 204
 
@@ -1987,6 +2049,67 @@ def emby_skip(emby_id):
     conn.execute("UPDATE emby_queue SET status='skipped' WHERE emby_id=?", (emby_id,))
     conn.commit()
     return "", 204
+
+
+# ---------------------------------------------------------------- nightly backup
+def backup_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(DB_PATH)), "backups")
+
+
+def backup_db():
+    """Write a consistent copy of the database to <data>/backups/movies-YYYY-MM-DD.db (SQLite's online
+    backup, safe while the app is running), without the re-fetchable TMDB/OMDb cache, verify it, and keep
+    the newest BACKUP_KEEP. Returns the file path."""
+    os.makedirs(backup_dir(), exist_ok=True)
+    dest = os.path.join(backup_dir(), f"movies-{date.today().isoformat()}.db")
+    tmp = dest + ".tmp"
+    for f in (tmp, tmp + "-wal", tmp + "-shm"):
+        if os.path.exists(f):
+            os.remove(f)
+    src, dst = connect(), sqlite3.connect(tmp)
+    try:
+        src.backup(dst)
+        dst.execute("DELETE FROM cache")
+        dst.commit()
+        dst.execute("PRAGMA journal_mode=DELETE")      # one self-contained file
+        dst.execute("VACUUM")
+        ok = dst.execute("PRAGMA integrity_check").fetchone()[0]
+        movies = dst.execute("SELECT COUNT(*) FROM movies").fetchone()[0]
+    finally:
+        src.close()
+        dst.close()
+    if ok != "ok":
+        os.remove(tmp)
+        raise RuntimeError(f"backup failed its integrity check: {ok}")
+    os.replace(tmp, dest)
+    old = sorted(f for f in os.listdir(backup_dir()) if re.fullmatch(r"movies-\d{4}-\d\d-\d\d\.db", f))
+    for f in old[:-BACKUP_KEEP]:
+        os.remove(os.path.join(backup_dir(), f))
+    print(f"backup: {dest} ({movies} movies, {os.path.getsize(dest) // 1024} KB)", flush=True)
+    return dest
+
+
+def last_backup():
+    try:
+        files = sorted(f for f in os.listdir(backup_dir()) if re.fullmatch(r"movies-\d{4}-\d\d-\d\d\.db", f))
+    except OSError:
+        return None
+    return files[-1][7:17] if files else None
+
+
+def _backup_background():
+    time.sleep(20)
+    while True:
+        try:
+            if last_backup() != date.today().isoformat():
+                backup_db()
+        except Exception as e:  # keep the loop alive whatever happens
+            print(f"backup failed: {e}", flush=True)
+        time.sleep(3600)
+
+
+if BACKUP_KEEP > 0:
+    threading.Thread(target=_backup_background, daemon=True, name="backup").start()
 
 
 def _emby_background():

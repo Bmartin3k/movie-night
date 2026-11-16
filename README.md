@@ -65,7 +65,9 @@ then get suggestions for one person or any group watching together.
   RoboCop 1987 instead of 2014. Ratings and watchers carry over (merging if the right one is already rated),
   and the fix is remembered so later Emby syncs / Netflix / CSV imports use it. Switching back undoes it.
 - **Watchlist**: suggestions saved with ☆ Save, remembered as saved *for* the people selected at the time
-  (saving it again for others adds them). It has the same "for" chips as Suggestions (one shared selection) and shows
+  (saving it again with other people selected adds them; ★ Saved means it's saved for everyone selected).
+  Rating it, skipping it or pressing Remove only takes it off the list of the people who did; it stays for
+  anyone else it was saved for. It has the same "for" chips as Suggestions (one shared selection) and shows
   what was saved for anyone selected, minus what someone selected has already seen and, with a kid included, anything
   over their rating limit. Marking one "Watched it" moves it to Watched. With Radarr set up,
   each card shows whether Radarr has it (✓ Downloaded / ⏳ searching) or a **⬇ Request in Radarr** button that adds it
@@ -89,7 +91,13 @@ Then, in the app:
 Port 8095 already taken? Set `PORT=` in `.env`. The app has **no login**: keep it on your home network
 (or behind a reverse proxy with authentication), not open to the internet.
 
-After editing `.env` or the code: `docker compose up -d --build`. Data lives in `data/movies.db` (SQLite). Back it up with the folder.
+After editing `.env` or the code: `docker compose up -d --build`. Data lives in `data/movies.db` (SQLite).
+
+**Backups**: once a day the app writes a verified copy of the database to `data/backups/movies-YYYY-MM-DD.db`
+(without the re-downloadable TMDB/OMDb cache, so it's small) and keeps the newest 14 (`BACKUP_KEEP` in `.env`;
+0 turns it off). They're on the same disk as the app, so copy that folder somewhere else now and then. To restore:
+`docker compose down`, copy a backup over `data/movies.db`, delete `data/movies.db-wal` and `data/movies.db-shm`
+if they exist, then `docker compose up -d`.
 
 Keys:
 - `TMDB_API_KEY`: free at https://www.themoviedb.org/settings/api. Either the v3 API key or the v4 read token works.
@@ -100,7 +108,7 @@ Keys:
 - `RADARR_URL` / `RADARR_API_KEY` (optional): Radarr → Settings → General → API Key. Optional
   `RADARR_QUALITY_PROFILE` (name or id) and `RADARR_ROOT_FOLDER` pick where requests go.
 - `OMDB_API_KEY`: free at https://www.omdbapi.com/apikey.aspx (activate it from the email). Only needed for
-  Rotten Tomatoes / Metacritic scores and the critics boost; they're cached for a week, so the free 1,000 lookups a day is plenty (Watched and To rate only look up the cards on screen, a page at a time).
+  Rotten Tomatoes / Metacritic scores and the critics boost; they're cached for 90 days once a movie has been out a year (14 days for new releases and movies with no score yet), so the free 1,000 lookups a day is plenty (Watched and To rate only look up the cards on screen, a page at a time).
 
 TMDB responses are cached in the DB for 7 days, so the Suggestions tab is fast after the first load.
 

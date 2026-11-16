@@ -141,7 +141,7 @@ function suggestionCard(m, kind) {
   }
   const score = m.vote_average ? `★ ${Number(m.vote_average).toFixed(1)}` : "";
   const btns = kind === "watchlist"
-    ? `<button class="ok" data-act="watched">Watched it</button><button data-act="unsave">Remove</button>
+    ? `<button class="ok" data-act="watched">Watched it</button><button data-act="unsave" title="Take it off the watchlist for ${esc(groupLabel())}">Remove</button>
        ${state.status?.radarr && m.tmdb_id ? `<button class="radarr" data-act="radarr" disabled>Radarr…</button>` : ""}`
     : `<button class="ok" data-act="watched" title="Already watched it? Add it to Watched with ratings">Already watched</button>
        ${m.tmdb_id ? `<button data-act="save">${m.saved ? "★ Saved" : "☆ Save"}</button><button data-act="dismiss" title="Not interested">✕</button>` : ""}`;
@@ -326,7 +326,8 @@ function renderWatched() {
   $("#view").options[2].textContent = `Needs my rating${needs ? ` (${needs})` : ""}`;
 }
 const rewatched = () => { state.watchedShown = 60; renderWatched(); };
-$("#filter").addEventListener("input", rewatched);
+let filterTimer;
+$("#filter").addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(rewatched, 300); });
 $("#view").addEventListener("change", rewatched);
 $("#sort").addEventListener("change", rewatched);
 $("#watched-more").addEventListener("click", () => { state.watchedShown += 60; renderWatched(); });
@@ -428,7 +429,7 @@ async function rateQueued(card, rating) {
   } catch (err) { card.classList.remove("done"); alert(err.message); return; }
   dropCard(card, q);
   state.suggestionsKey = null;
-  loadMovies();
+  loadMovies(); loadWatchlist();
 }
 const mark = (q, action) => api("/mark", { method: "POST", body: { tmdb_id: q.tmdb_id, person_id: state.me, action } });
 $("#torate-grid").addEventListener("click", async (e) => {
@@ -667,7 +668,7 @@ function renderSuggestions() {
   fb.setAttribute("aria-pressed", String(!!fresh));
   const all = state.suggestions || [];
   all.forEach((m) => { if (m.tmdb_id && "mc" in m && !(m.tmdb_id in rtCache)) rtCache[m.tmdb_id] = { rt: m.rt, mc: m.mc }; });
-  const unknown = fresh && !rtFailed && all.some((m) => m.tmdb_id && !(m.tmdb_id in rtCache));
+  const unknown = fresh && all.some((m) => m.tmdb_id && !rtSettled(m.tmdb_id));
   const list = all.filter((m) => (!g || (m.genres || []).includes(g)) && (!fresh || isFresh(m)));
   $("#suggest-grid").innerHTML = unknown ? `<div class="spinner">Checking Rotten Tomatoes scores…</div>` : list.map((m) => suggestionCard(m)).join("");
   if (unknown) loadRT(all.map((m) => m.tmdb_id)).then(renderSuggestions);
@@ -692,12 +693,17 @@ function rtBadge(card, v) {           // v = {rt: "92%" | null, mc: 74 | null}
   if (v.mc != null) parts.push(`<span class="mc ${v.mc >= 61 ? "good" : v.mc >= 40 ? "mixed" : "bad"}" title="Metacritic Metascore">${Number(v.mc)}</span>`);
   card.querySelector(".poster")?.insertAdjacentHTML("beforeend", `<span class="rt">${parts.join(" ")}</span>`);
 }
-let rtFailed = false;
+// Scores the server couldn't look up just now (OMDb's daily limit, a network blip) aren't in its answer.
+// Remember when we asked, and ask again in 10 minutes instead of on every redraw.
+const rtAsked = new Map();
+const RT_RETRY_MS = 10 * 60 * 1000;
+const rtSettled = (id) => String(id) in rtCache || Date.now() - (rtAsked.get(String(id)) || 0) < RT_RETRY_MS;
 async function loadRT(ids, onBatch) {      // fetch scores we don't have yet, 40 at a time
-  const need = [...new Set(ids.map(String).filter((id) => id && id !== "null" && !(id in rtCache)))];
-  for (let i = 0; i < need.length && !rtFailed; i += 40) {
+  const need = [...new Set(ids.map(String).filter((id) => id && id !== "null" && !rtSettled(id)))];
+  need.forEach((id) => rtAsked.set(id, Date.now()));
+  for (let i = 0; i < need.length; i += 40) {
     try { Object.assign(rtCache, await api(`/rt?ids=${need.slice(i, i + 40).join(",")}`)); }
-    catch { rtFailed = true; }
+    catch { /* asked: retried after RT_RETRY_MS */ }
     onBatch?.();
   }
 }
@@ -796,7 +802,7 @@ async function onSuggestionClick(e) {
       const existing = tmdb && state.movies.find((x) => x.tmdb_id === tmdb);
       openDialog(existing || null, existing ? null : m);
     } else if (btn.dataset.act === "save") {
-      if (m.saved) { await api(`/watchlist/${tmdb}`, { method: "DELETE" }); m.saved = false; }
+      if (m.saved) { await api(`/watchlist/${tmdb}?people=${groupIds().join(",")}`, { method: "DELETE" }); m.saved = false; }
       else {
         const reason = m.reason || (m.because?.length ? "Because of " + m.because.map((b) => b.title).join(", ") : "")
           || (m.loved_by ? m.loved_by.map((l) => `${l.name} rated it ${fmtR(l.rating)}`).join(", ") : "");
@@ -813,8 +819,9 @@ async function onSuggestionClick(e) {
       btn.disabled = true; btn.textContent = "Requesting…";
       try { const r = await api("/radarr/request", { method: "POST", body: { tmdb_id: tmdb } }); setRadarr(btn, r.state); }
       catch (err) { btn.disabled = false; btn.textContent = "⬇ Request in Radarr"; alert(err.message); }
-    } else if (btn.dataset.act === "unsave") {
-      await api(`/watchlist/${tmdb}`, { method: "DELETE" });
+    } else if (btn.dataset.act === "unsave") {      // off the selected people's lists; stays for anyone else it was saved for
+      await api(`/watchlist/${tmdb}?people=${groupIds().join(",")}`, { method: "DELETE" });
+      state.suggestionsKey = null;
       loadWatchlist();
     }
   } catch (err) { alert(err.message); }
@@ -990,7 +997,7 @@ $("#movie-form").addEventListener("submit", async (e) => {
     try {
       await api(`/emby/queue/${encodeURIComponent(qi.key || qi.emby_id)}/resolve`, { method: "POST", body: { watches, not_watched: notWatched, watched_on: $("#m-date").value } });
       dlg.close(); state.suggestionsKey = null;
-      await Promise.all([loadMovies(), loadQueue()]);
+      await Promise.all([loadMovies(), loadQueue(), loadWatchlist()]);
     } catch (ex) { err.textContent = ex.message; }
     finally { $("#save-btn").disabled = false; }
     return;
