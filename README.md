@@ -76,6 +76,11 @@ TMDB responses are cached in the DB for 7 days, so the Suggestions tab is fast a
 - `app.py`: Flask API, scoring (`suggestions()`), Claude prompt (`SYSTEM_PROMPT`, `claude_suggestions()`)
 - `static/`: the page (`index.html`, `style.css`, `app.js`)
 
+## Credits
+
+Made by Blake Martin. Movie details, posters and recommendations come from [TMDB](https://www.themoviedb.org/).
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT © 2026 Blake Martin. See [LICENSE](LICENSE).
