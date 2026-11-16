@@ -28,6 +28,7 @@ def clean_db():
     A._radarr_lib.update(at=0.0, states={})
     A._omdb_pause_until = 0.0
     A._unlock_fails.update(n=0, until=0.0)
+    A._pin_fails.clear()
     if os.path.exists(A.SETTINGS_PATH):
         os.remove(A.SETTINGS_PATH)
     yield
@@ -56,3 +57,9 @@ def add_movie(client):
         assert r.status_code == 201, r.get_json()
         return r.get_json()
     return _add
+
+
+def as_person(client, pid, pin=None):
+    """Pick who's rating on this test browser, like the 👤 button does."""
+    r = client.post("/api/me", json={"person_id": pid, "pin": pin})
+    assert r.status_code == 200, r.get_json()

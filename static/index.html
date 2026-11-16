@@ -150,7 +150,8 @@
 <!-- who's rating on this device -->
 <dialog id="me-dialog">
   <h2>Who's rating?</h2>
-  <p class="muted small">This device remembers who you picked. Anyone can switch at any time.</p>
+  <p class="muted small">This device remembers who you picked. 🔒 people need their PIN once per device.
+    You can only change your own ratings; for others you can add a first rating, not change one.</p>
   <div id="me-list" class="me-list"></div>
   <div class="actions">
     <button type="button" id="manage-people" class="ghost">Manage people…</button>
@@ -177,6 +178,21 @@
   </form>
 </dialog>
 
+<!-- PIN prompt -->
+<dialog id="pin-dialog">
+  <form id="pin-form">
+    <h2 id="pin-title">PIN</h2>
+    <p class="muted small" id="pin-msg"></p>
+    <input id="pin-in" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="4-digit PIN">
+    <p id="pin-error" class="error"></p>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" id="pin-cancel" class="ghost">Cancel</button>
+      <button type="submit" class="primary">OK</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- settings password prompt -->
 <dialog id="unlock-dialog">
   <form id="unlock-form">
@@ -196,7 +212,8 @@
 <dialog id="people-dialog">
   <h2>Household</h2>
   <p class="muted small">Everyone who rates movies. "Also known as" is a person's Emby / Jellyfin / Plex user name or Netflix profile name,
-    so imported history is credited to the right person. Set a kid's age-rating limit, and any suggestions that include them
+    so imported history is credited to the right person. 🔑 PIN: picking that person in Who's rating? asks for it once per device, so nobody else can change their ratings.
+    Set a kid's age-rating limit, and any suggestions that include them
     stay within it (US MPA ratings from TMDB; movies with no US rating are left out). With a birthdate, imported
     Emby / Netflix / CSV viewings from before "count history from age" don't count for that person.</p>
   <div id="people-rows"></div>

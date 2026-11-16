@@ -193,17 +193,55 @@ function renderMe() {
 }
 function openMe() {
   $("#me-list").innerHTML = state.people.map((p) =>
-    `<button class="${p.id === state.me ? "primary" : "ghost"}" data-pid="${p.id}">${esc(p.emoji || "👤")} ${esc(p.name)}</button>`).join("")
+    `<button class="${p.id === state.me ? "primary" : "ghost"}" data-pid="${p.id}">${esc(p.emoji || "👤")} ${esc(p.name)}${p.pin_set ? " 🔒" : ""}</button>`).join("")
     || `<p class="muted">Nobody yet. Add your household first.</p>`;
   $("#me-dialog").showModal();
 }
 $("#me-btn").addEventListener("click", openMe);
 $("#me-close").addEventListener("click", () => $("#me-dialog").close());
-$("#me-list").addEventListener("click", (e) => {
+// Who's rating is remembered by the server for this browser; a person with a PIN needs it once per device.
+async function setMe(pid) {
+  const p = person(pid);
+  let pin = null, ask = p?.id !== state.me;
+  for (;;) {
+    if (p?.pin_set && ask) {
+      pin = await askPin(`${p.emoji || "👤"} ${p.name}`, `Enter ${p.name}'s PIN`);
+      if (pin === null) return false;
+    }
+    const res = await fetch("/api/me", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ person_id: pid, pin }) });
+    if (res.ok) break;
+    const d = await res.json().catch(() => ({}));
+    if (!d.pin) { alert(d.error || "Couldn't switch"); return false; }
+    pinError = pin === null ? "" : d.error;   // wrong PIN (or this device forgot you): ask again
+    ask = true;
+  }
+  state.me = pid; lsSet("me", pid);
+  return true;
+}
+let pinError = "";
+function askPin(title, msg) {
+  const dlg = $("#pin-dialog");
+  $("#pin-title").textContent = title; $("#pin-msg").textContent = msg;
+  $("#pin-in").value = ""; $("#pin-error").textContent = pinError; pinError = "";
+  dlg.showModal(); $("#pin-in").focus();
+  return new Promise((resolve) => {
+    const done = (v) => { dlg.close(); $("#pin-form").onsubmit = null; $("#pin-cancel").onclick = null; dlg.oncancel = null; resolve(v); };
+    $("#pin-cancel").onclick = () => done(null);
+    dlg.oncancel = () => done(null);
+    $("#pin-form").onsubmit = (e) => {
+      e.preventDefault();
+      const v = $("#pin-in").value.trim();
+      if (!/^\d{4}$/.test(v)) { $("#pin-error").textContent = "4 digits"; return; }
+      done(v);
+    };
+  });
+}
+$("#me-list").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-pid]");
   if (!b) return;
-  state.me = Number(b.dataset.pid); lsSet("me", state.me);
   $("#me-dialog").close();
+  if (!await setMe(Number(b.dataset.pid))) return;
   state.showNotMe = false; state.queueShown = 48;
   loadQueue();
   renderAll();
@@ -234,6 +272,7 @@ function renderPeopleDialog() {
         <label>Born <input type="date" data-f="birthdate" value="${esc(p.birthdate || "")}" max="${new Date().toLocaleDateString("en-CA")}"></label>
         <label title="Imported viewings from before this age don't count for ${esc(p.name)}">Count history from age
           <input type="number" class="age-in" data-f="count_from_age" min="0" max="18" value="${p.count_from_age ?? 5}"></label>
+        <button type="button" class="ghost small-btn" data-act="pin" title="${p.pin_set ? "Change or remove" : "Set"} ${esc(p.name)}'s 4-digit PIN">🔑 ${p.pin_set ? "PIN set" : "Set PIN"}</button>
         <select class="cert" data-f="max_cert" title="Suggestions that include ${esc(p.name)} stay within this age rating">
           ${[["", "Any rating"], ["PG-13", "Kid: up to PG-13"], ["PG", "Kid: up to PG"], ["G", "Kid: G only"]]
             .map(([v, l]) => `<option value="${v}" ${(p.max_cert || "") === v ? "selected" : ""}>${l}</option>`).join("")}
@@ -271,6 +310,20 @@ $("#people-rows").addEventListener("change", async (e) => {
   } catch (err) { $("#people-error").textContent = err.message; renderPeopleDialog(); }
 });
 $("#people-rows").addEventListener("click", async (e) => {
+  const pb = e.target.closest("[data-act=pin]");
+  if (pb) {
+    const p = person(Number(pb.closest("[data-pid]").dataset.pid));
+    const pin = await askPin(`🔑 ${p.name}'s PIN`, p.pin_set
+      ? `New 4-digit PIN for ${p.name}, or 0000 to remove it. Picking ${p.name} in Who's rating? asks for it.`
+      : `Pick a 4-digit PIN for ${p.name} (not 0000). Picking ${p.name} in Who's rating? will ask for it once per device.`);
+    if (pin === null) return;
+    try {
+      await api(`/people/${p.id}/pin`, { method: "PUT", body: { pin: pin === "0000" ? "" : pin } });
+      $("#people-error").textContent = "";
+      await peopleChanged();
+    } catch (err) { $("#people-error").textContent = err.message; }
+    return;
+  }
   const b = e.target.closest("[data-act=del]");
   if (!b) return;
   const p = person(Number(b.closest("[data-pid]").dataset.pid));
@@ -285,7 +338,7 @@ $("#add-person").addEventListener("submit", async (e) => {
   try {
     const p = await api("/people", { method: "POST", body: { name: $("#np-name").value, emoji: $("#np-emoji").value } });
     $("#np-name").value = ""; $("#np-emoji").value = "";
-    if (!state.me) { state.me = p.id; lsSet("me", p.id); }
+    if (!state.me) { await loadPeople(); await setMe(p.id); }
     $("#people-error").textContent = "";
     await peopleChanged();
     $("#np-name").focus();
@@ -307,7 +360,7 @@ $("#unlinked").addEventListener("click", async (e) => {
     const body = { name: nice.trim() };
     if (nice.trim().toLowerCase() !== name.toLowerCase()) body.aliases = name;
     const p = await api("/people", { method: "POST", body });
-    if (!state.me) { state.me = p.id; lsSet("me", p.id); }
+    if (!state.me) { await loadPeople(); await setMe(p.id); }
     await peopleChanged();
   } catch (err) { $("#people-error").textContent = err.message; }
 });
@@ -1091,6 +1144,11 @@ function renderAll() {
   }
   if (!state.status.claude) $("#claude-form button").disabled = true;
   await loadPeople();
+  const srv = (await api("/me")).person_id;      // the server knows who this browser is
+  if (srv) { state.me = srv; lsSet("me", srv); }
+  else if (state.me && person(state.me) && !person(state.me).pin_set) {       // from before PINs: carry it over
+    await api("/me", { method: "POST", body: { person_id: state.me } });
+  } else state.me = null;
   await Promise.all([loadMovies(), loadWatchlist(), loadQueue()]);
   renderMe();
   showTab(lsGet("tab") || (state.queue.length ? "torate" : "watched"));

@@ -174,6 +174,9 @@ def _migrate(conn):
     if "birthdate" not in pcols:
         conn.execute("ALTER TABLE people ADD COLUMN birthdate TEXT")
         conn.execute("ALTER TABLE people ADD COLUMN count_from_age INTEGER NOT NULL DEFAULT 5")
+    # 4-digit PIN (hashed): picking this person in "Who's rating?" needs it; NULL = no PIN
+    if "pin_hash" not in pcols:
+        conn.execute("ALTER TABLE people ADD COLUMN pin_hash TEXT")
     # where a Watched movie came from (emby / netflix / Rental...): shared accounts show for everyone
     if "source" not in [r[1] for r in conn.execute("PRAGMA table_info(movies)")] and \
             "rating" not in [r[1] for r in conn.execute("PRAGMA table_info(movies)")]:
@@ -916,6 +919,98 @@ def set_password():
     return jsonify(password_set=bool(pw), unlocked=True)
 
 
+# ---------------------------------------------------------------- who's rating (per-person PINs)
+# Each browser remembers who it is in its (signed, long-lived) cookie. Picking a person with a PIN needs the PIN once.
+# You can change your own ratings and marks; for others you can only add a first rating or "seen". Changing or
+# removing someone else's needs the settings password (if one is set).
+app.permanent_session_lifetime = 365 * 24 * 3600
+_pin_fails = {}                     # person id -> {"n", "until"}
+
+
+def public_person(row):
+    d = dict(row)
+    d["pin_set"] = bool(d.pop("pin_hash", None))
+    return d
+
+
+def current_me():
+    """The person this browser picked in "Who's rating?" (None if nobody, or their PIN changed since)."""
+    pid = session.get("me")
+    if not pid:
+        return None
+    r = db().execute("SELECT pin_hash FROM people WHERE id=?", (pid,)).fetchone()
+    if not r or (r[0] or "")[-12:] != session.get("me_pin", ""):
+        return None
+    return pid
+
+
+def may_act_for(pid):
+    return pid == current_me() or (password_set() and unlocked())
+
+
+def not_yours(conn, pid):
+    name = (conn.execute("SELECT name FROM people WHERE id=?", (pid,)).fetchone() or ["them"])[0]
+    if password_set():
+        return jsonify(error=f"Only {name} can change {name}'s ratings (or a grown-up with the settings password)",
+                       locked=True), 403
+    return jsonify(error=f"Only {name} can change {name}'s ratings. Pick {name} in 👤 Who's rating?"), 403
+
+
+@app.get("/api/me")
+def get_me():
+    return jsonify(person_id=current_me())
+
+
+@app.post("/api/me")
+def set_me():
+    """{"person_id": 3, "pin": "1234"} -> this browser is that person. {"person_id": null} -> nobody."""
+    b = request.get_json(silent=True) or {}
+    if not b.get("person_id"):
+        session.pop("me", None)
+        return jsonify(person_id=None)
+    try:
+        pid = int(b["person_id"])
+    except (TypeError, ValueError):
+        return jsonify(error="person_id required"), 400
+    r = db().execute("SELECT pin_hash FROM people WHERE id=?", (pid,)).fetchone()
+    if not r:
+        return jsonify(error="not found"), 404
+    f = _pin_fails.setdefault(pid, {"n": 0, "until": 0.0})
+    if r[0]:
+        if time.time() < f["until"]:
+            return jsonify(error=f"Too many tries. Wait {int(f['until'] - time.time()) + 1} seconds."), 429
+        if not check_password_hash(r[0], str(b.get("pin") or "")):
+            f["n"] += 1
+            if f["n"] >= 5:
+                f.update(n=0, until=time.time() + 60)
+            time.sleep(1)
+            return jsonify(error="Wrong PIN", pin=True), 403
+    f["n"] = 0
+    session.permanent = True
+    session["me"], session["me_pin"] = pid, (r[0] or "")[-12:]
+    return jsonify(person_id=pid)
+
+
+@app.put("/api/people/<int:pid>/pin")
+def set_pin(pid):
+    """{"pin": "1234"} sets/changes it, {"pin": ""} removes it. Your own, or anyone's with the settings password."""
+    if not may_act_for(pid) and password_set():
+        return locked_response()
+    if not password_set() and pid != current_me() and db().execute(
+            "SELECT pin_hash FROM people WHERE id=?", (pid,)).fetchone()[0]:
+        return jsonify(error="Only they can change their PIN (set a settings password to reset PINs)"), 403
+    pin = str((request.get_json(silent=True) or {}).get("pin") or "")
+    if pin and not re.fullmatch(r"\d{4}", pin):
+        return jsonify(error="The PIN has to be 4 digits"), 400
+    conn = db()
+    h = generate_password_hash(pin) if pin else None
+    conn.execute("UPDATE people SET pin_hash=? WHERE id=?", (h, pid))
+    conn.commit()
+    if session.get("me") == pid:             # stay signed in as yourself
+        session["me_pin"] = (h or "")[-12:]
+    return jsonify(pin_set=bool(pin))
+
+
 @app.get("/api/settings")
 def get_settings():
     """Each setting with where its value comes from. Secrets are never sent back, only their last 4 characters."""
@@ -1035,7 +1130,7 @@ def list_people():
     conn = db()
     rows = conn.execute("""SELECT p.*, COUNT(w.rating) AS rated, COUNT(w.movie_id) - COUNT(w.rating) AS unrated
                            FROM people p LEFT JOIN watches w ON w.person_id = p.id GROUP BY p.id ORDER BY p.id""")
-    people = [dict(r) for r in rows]
+    people = [public_person(r) for r in rows]
     # Emby / Netflix names nobody is linked to yet
     seen = set()
     for r in conn.execute("SELECT watched_by FROM emby_queue WHERE status='pending'"):
@@ -1100,7 +1195,7 @@ def add_person():
     except sqlite3.IntegrityError:
         return jsonify(error=f"{p['name']} already exists"), 409
     conn.commit()
-    return jsonify(dict(conn.execute("SELECT * FROM people WHERE id=?", (cur.lastrowid,)).fetchone())), 201
+    return jsonify(public_person(conn.execute("SELECT * FROM people WHERE id=?", (cur.lastrowid,)).fetchone())), 201
 
 
 PROTECTED_PERSON_FIELDS = {"max_cert", "birthdate", "count_from_age"}
@@ -1128,7 +1223,7 @@ def update_person(pid):
     except sqlite3.IntegrityError:
         return jsonify(error="Someone already has that name"), 409
     conn.commit()
-    return jsonify(dict(conn.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()))
+    return jsonify(public_person(conn.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()))
 
 
 @app.delete("/api/people/<int:pid>")
@@ -1166,14 +1261,27 @@ def list_movies():
     return jsonify(movie_with_watches(conn, rows))
 
 
+class NotYours(Exception):
+    def __init__(self, pid):
+        self.pid = pid
+
+
 def apply_watches(conn, mid, entries):
-    """entries: [{person_id, rating (1-10 or null = seen, not rated), notes?, remove?}]"""
+    """entries: [{person_id, rating (1-10 or null = seen, not rated), notes?, remove?}]
+    Someone else's existing rating can't be changed or removed (NotYours), but a first rating / "seen" can be added."""
     valid = {r[0] for r in conn.execute("SELECT id FROM people")}
     now = int(time.time())
     for e in entries or []:
         pid = int(e.get("person_id", 0))
         if pid not in valid:
             raise ValueError(f"unknown person {pid}")
+        if not may_act_for(pid):
+            old = conn.execute("SELECT rating, notes FROM watches WHERE movie_id=? AND person_id=?", (mid, pid)).fetchone()
+            r_new = e.get("rating")
+            if old and (e.get("remove")
+                        or (old["rating"] is not None and (r_new is None or int(r_new) != old["rating"]))
+                        or ("notes" in e and (e.get("notes") or "").strip() != (old["notes"] or ""))):
+                raise NotYours(pid)
         tmdb = conn.execute("SELECT tmdb_id FROM movies WHERE id=?", (mid,)).fetchone()[0]
         if e.get("remove"):
             conn.execute("DELETE FROM watches WHERE movie_id=? AND person_id=?", (mid, pid))
@@ -1223,6 +1331,9 @@ def add_movie():
     cur = conn.execute(f"INSERT INTO movies ({','.join(m)}) VALUES ({','.join('?' * len(m))})", list(m.values()))
     try:
         apply_watches(conn, cur.lastrowid, b["ratings"])
+    except NotYours as e:
+        conn.rollback()
+        return not_yours(conn, e.pid)
     except (ValueError, TypeError) as e:
         conn.rollback()
         return jsonify(error=str(e)), 400
@@ -1248,6 +1359,9 @@ def update_movie(mid):
         conn.execute("UPDATE movies SET watched_on=? WHERE id=?", ((b.get("watched_on") or "").strip() or None, mid))
     try:
         apply_watches(conn, mid, b.get("ratings"))
+    except NotYours as e:
+        conn.rollback()
+        return not_yours(conn, e.pid)
     except (ValueError, TypeError) as e:
         conn.rollback()
         return jsonify(error=str(e)), 400
@@ -1259,6 +1373,9 @@ def update_movie(mid):
 @app.delete("/api/movies/<int:mid>")
 def delete_movie(mid):
     conn = db()
+    others = [r[0] for r in conn.execute("SELECT person_id FROM watches WHERE movie_id=?", (mid,)) if not may_act_for(r[0])]
+    if others:                                   # it takes everyone's ratings with it
+        return not_yours(conn, others[0])
     conn.execute("DELETE FROM movies WHERE id=?", (mid,))
     conn.commit()
     return "", 204
@@ -2447,6 +2564,8 @@ def mark():
         return jsonify(error="tmdb_id and person_id required"), 400
     if not conn.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone():
         return jsonify(error="Pick who's rating first"), 400
+    if not may_act_for(pid):
+        return not_yours(conn, pid)
     now, act = int(time.time()), b.get("action")
     if act == "not_watched":
         conn.execute("INSERT OR IGNORE INTO not_watched VALUES (?,?,?)", (tid, pid, now))
@@ -2484,6 +2603,9 @@ def emby_resolve(emby_id):
     tag_source(conn, mid, q["source"])
     try:
         apply_watches(conn, mid, watches + [{"person_id": p, "remove": True} for p in b.get("not_watched") or []])
+    except NotYours as e:
+        conn.rollback()
+        return not_yours(conn, e.pid)
     except (ValueError, TypeError) as e:
         conn.rollback()
         return jsonify(error=str(e)), 400
@@ -2521,9 +2643,13 @@ def emby_rate(emby_id):
              q["watched_on"], int(time.time()))).lastrowid
     tag_source(conn, mid, q["source"])
     watchers = queue_watchers(conn, q["watched_by"], q["tmdb_id"], watched_on=q["watched_on"])[0]
-    apply_watches(conn, mid, [{"person_id": p, "rating": None} for p in watchers - {pid}
-                              if not conn.execute("SELECT 1 FROM watches WHERE movie_id=? AND person_id=?", (mid, p)).fetchone()]
-                  + [{"person_id": pid, "rating": r}])
+    try:
+        apply_watches(conn, mid, [{"person_id": p, "rating": None} for p in watchers - {pid}
+                                  if not conn.execute("SELECT 1 FROM watches WHERE movie_id=? AND person_id=?", (mid, p)).fetchone()]
+                      + [{"person_id": pid, "rating": r}])
+    except NotYours as e:
+        conn.rollback()
+        return not_yours(conn, e.pid)
     conn.execute("DELETE FROM emby_queue WHERE emby_id=?", (emby_id,))
     if q["tmdb_id"]:
         watchlist_prune(conn, q["tmdb_id"])

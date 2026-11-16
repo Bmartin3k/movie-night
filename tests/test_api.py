@@ -7,6 +7,7 @@ import time
 import pytest
 
 import app as A
+from conftest import as_person
 
 
 # ---------------------------------------------------------------- basics
@@ -35,6 +36,7 @@ def test_ratings_are_per_person_and_averaged(client, people, add_movie):
     assert {w["person_id"]: w["rating"] for w in m["watches"]} == {people["Jane"]: 10, people["Sam"]: 7}
     assert client.post("/api/movies", json={"tmdb_id": 603, "title": "The Matrix",
                                             "ratings": [{"person_id": people["Jane"], "rating": 9}]}).status_code == 409
+    as_person(client, people["Jane"])
     bad = client.put(f"/api/movies/{m['id']}", json={"ratings": [{"person_id": people["Jane"], "rating": 11}]})
     assert bad.status_code == 400
     assert client.post("/api/movies", json={"title": "No one rated it", "ratings": []}).status_code == 400
@@ -42,6 +44,7 @@ def test_ratings_are_per_person_and_averaged(client, people, add_movie):
 
 def test_i_didnt_watch_it_removes_the_watch_and_is_remembered(client, people, add_movie):
     m = add_movie(603, "The Matrix", {people["Jane"]: 10, people["Sam"]: None})
+    as_person(client, people["Sam"])
     client.put(f"/api/movies/{m['id']}", json={"ratings": [{"person_id": people["Sam"], "remove": True}]})
     conn = A.connect()
     assert A.declined_map(conn) == {603: {people["Sam"]}}
@@ -56,6 +59,7 @@ def test_to_rate_needs_a_person_and_lists_seen_but_unrated(client, people, add_m
     assert client.get(f"/api/torate?person_id={people['Jane']}").get_json() == []
     sams = client.get(f"/api/torate?person_id={people['Sam']}").get_json()
     assert [(q["title"], q["kind"], q["credited"]) for q in sams] == [("The Matrix", "movie", True)]
+    as_person(client, people["Sam"])
     client.post("/api/mark", json={"tmdb_id": 603, "person_id": people["Sam"], "action": "skip"})
     assert client.get(f"/api/torate?person_id={people['Sam']}").get_json() == []
 
@@ -115,6 +119,7 @@ def test_skipping_and_deleting_a_person_clear_their_saves(client, people):
     j, s, a = people["Jane"], people["Sam"], people["Alex"]
     save(client, 1, "Up", [s, a])
     save(client, 2, "Coco", [a])
+    as_person(client, s)
     client.post("/api/mark", json={"tmdb_id": 1, "person_id": s, "action": "skip"})
     assert wl(client) == {"Up": ["Alex"], "Coco": ["Alex"]}
     client.delete(f"/api/people/{a}")
@@ -517,3 +522,56 @@ def test_plex_sync_reads_history_for_every_account(client, people, monkeypatch):
 
 def test_sync_with_nothing_set_up(client):
     assert client.post("/api/sync").status_code == 400
+
+
+# ---------------------------------------------------------------- PINs: only you change your ratings
+def test_pins_guard_who_is_rating_and_their_ratings(client, people, add_movie, monkeypatch):
+    monkeypatch.setattr(A.time, "sleep", lambda s: None)
+    j, s = people["Jane"], people["Sam"]
+    assert client.put(f"/api/people/{j}/pin", json={"pin": "12a4"}).status_code == 400
+    as_person(client, j)
+    assert client.put(f"/api/people/{j}/pin", json={"pin": "1234"}).get_json() == {"pin_set": True}
+    assert client.get("/api/me").get_json() == {"person_id": j}                  # still Jane after setting it
+    people_out = client.get("/api/people").get_json()["people"]
+    assert all("pin_hash" not in p for p in people_out) and next(p for p in people_out if p["id"] == j)["pin_set"]
+
+    kid = A.app.test_client()
+    assert kid.post("/api/me", json={"person_id": j, "pin": "0000"}).status_code == 403
+    assert kid.get("/api/me").get_json() == {"person_id": None}
+    as_person(kid, s)                                                            # Sam has no PIN: free
+    m = add_movie(603, "The Matrix", {j: 10})
+    put = lambda c, r: c.put(f"/api/movies/{m['id']}", json={"ratings": r}).status_code
+    assert put(kid, [{"person_id": j, "rating": 2}]) == 403                      # can't change Jane's
+    assert put(kid, [{"person_id": j, "remove": True}]) == 403                   # or remove it
+    assert put(kid, [{"person_id": j, "rating": 10}, {"person_id": s, "rating": 6}]) == 200   # unchanged + own: fine
+    assert put(kid, [{"person_id": s, "rating": 7}]) == 200                      # own rating can change
+    assert kid.delete(f"/api/movies/{m['id']}").status_code == 403              # would delete Jane's too
+    assert kid.post("/api/mark", json={"tmdb_id": 603, "person_id": j, "action": "skip"}).status_code == 403
+    assert kid.put(f"/api/people/{j}/pin", json={"pin": ""}).status_code == 403  # can't clear Jane's PIN
+    m2 = add_movie(604, "Up", {s: 8})
+    assert put(client, [{"person_id": s, "rating": 1}]) == 403                   # Jane can't change Sam's either
+    assert client.put(f"/api/movies/{m2['id']}", json={"ratings": [{"person_id": j, "rating": 9}]}).status_code == 200
+
+    as_person(kid, j, "1234")                                                   # right PIN: Jane on this browser
+    assert put(kid, [{"person_id": j, "rating": 9}]) == 200
+    client.put(f"/api/people/{j}/pin", json={"pin": "5678"})                     # PIN changed elsewhere:
+    assert kid.get("/api/me").get_json() == {"person_id": None}                 # other browsers are signed out
+
+    for _ in range(5):                                                           # 5 wrong: a minute's pause
+        kid.post("/api/me", json={"person_id": j, "pin": "0000"})
+    assert kid.post("/api/me", json={"person_id": j, "pin": "5678"}).status_code == 429
+
+
+def test_settings_password_overrides_pins(client, people, add_movie):
+    j, s = people["Jane"], people["Sam"]
+    as_person(client, s)
+    client.put(f"/api/people/{s}/pin", json={"pin": "1111"})
+    client.put("/api/password", json={"password": "grownups"})                   # this browser is unlocked
+    m = add_movie(603, "The Matrix", {j: 10})
+    assert client.put(f"/api/movies/{m['id']}", json={"ratings": [{"person_id": j, "rating": 8}]}).status_code == 200
+    other = A.app.test_client()
+    assert other.put(f"/api/people/{s}/pin", json={"pin": ""}).get_json()["locked"] is True
+    client.post("/api/lock")
+    assert client.put(f"/api/movies/{m['id']}", json={"ratings": [{"person_id": j, "rating": 7}]}).status_code == 403
+    client.post("/api/unlock", json={"password": "grownups"})
+    assert client.put(f"/api/people/{s}/pin", json={"pin": ""}).status_code == 200   # grown-up resets a PIN
