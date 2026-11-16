@@ -1047,8 +1047,10 @@ def rematch_queued(emby_id):
 @app.get("/api/watchlist")
 def get_watchlist():
     """The watchlist for the people selected (?people=1,4; empty = everyone): movies saved for anyone in
-    the group, minus what someone in the group has already seen, and (with a kid in the group) anything
-    over the kid's rating limit. Without ?people it returns everything."""
+    the group that someone in it still hasn't seen, and (with a kid in the group) nothing over the kid's
+    rating limit. Someone in the group who has seen it keeps it on only if they rated it 4½★+ (9/10):
+    they'd watch it again. Seen without a rating, or skipped, takes it off. Without ?people it returns
+    everything."""
     conn = db()
     names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people")}
     rows = []
@@ -1060,8 +1062,26 @@ def get_watchlist():
     if "people" not in request.args:
         return jsonify(rows)
     group = set(selected_people(conn, request.args.get("people")))
-    seen = excluded_ids(conn, group)
-    rows = [d for d in rows if (d["saved_for"] is None or group & set(d["saved_for"])) and d["tmdb_id"] not in seen]
+    seen = seen_by(conn, group)
+    dismissed = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")}
+    rated = {}
+    for r in conn.execute("SELECT m.tmdb_id, w.person_id, w.rating FROM movies m JOIN watches w ON w.movie_id=m.id "
+                          "WHERE m.tmdb_id IS NOT NULL AND w.rating IS NOT NULL"):
+        if r[1] in group:
+            rated.setdefault(r[0], {})[names[r[1]]] = r[2]
+
+    def still_on(d):
+        who = seen.get(d["tmdb_id"], set())
+        if not who:
+            return True
+        r = rated.get(d["tmdb_id"], {})
+        if "someone" in who or who >= {names[p] for p in group} or any((r.get(n) or 0) < 9 for n in who):
+            return False
+        d["rewatch"] = [{"name": n, "rating": r[n]} for n in sorted(who)]
+        return True
+
+    rows = [d for d in rows if (d["saved_for"] is None or group & set(d["saved_for"]))
+            and d["tmdb_id"] not in dismissed and still_on(d)]
     limit = group_limit(conn, list(group))
     return jsonify(apply_cert_limit(rows, limit, keep=len(rows)) if limit and TMDB_KEY else rows)
 

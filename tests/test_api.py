@@ -89,11 +89,26 @@ def test_watchlist_hides_what_someone_selected_has_seen(client, people, add_movi
     save(client, 1, "Up", [j, s])
     add_movie(1, "Up", {j: 9})                          # Jane watched and rated it
     assert wl(client) == {"Up": ["Sam"]}                # off Jane's list, still on Sam's
-    assert wl(client, [j, s]) == {}                     # together: Jane has seen it
+    assert wl(client, [j, s]) == {"Up": ["Sam"]}        # together: Jane loved it (4½★), Sam hasn't seen it
+    assert client.get(f"/api/watchlist?people={j},{s}").get_json()[0]["rewatch"] == [{"name": "Jane", "rating": 9}]
+    assert wl(client, [j]) == {}                        # Jane alone: she's seen it, nobody left to show it to
     assert wl(client, [s]) == {"Up": ["Sam"]}
     mid = client.get("/api/movies").get_json()[0]["id"]
     client.put(f"/api/movies/{mid}", json={"ratings": [{"person_id": s, "rating": 8}]})
     assert wl(client) == {}                             # everyone it was saved for has seen it
+
+
+def test_watchlist_together_hides_it_when_a_viewer_rated_it_under_4_5(client, people, add_movie):
+    j, s, a = people["Jane"], people["Sam"], people["Alex"]
+    save(client, 1, "Up", [s])
+    save(client, 2, "Coco", [s])
+    save(client, 3, "Cars", [s])
+    add_movie(1, "Up", {j: 8})                          # 4★: wouldn't watch it again
+    add_movie(2, "Coco", {j: 10, a: 9})
+    add_movie(3, "Cars", {j: None})                     # seen, no rating
+    assert wl(client, [j, s]) == {"Coco": ["Sam"]}
+    assert wl(client, [j, s, a]) == {"Coco": ["Sam"]}
+    assert wl(client, [j, a]) == {}                     # saved for neither of them
 
 
 def test_skipping_and_deleting_a_person_clear_their_saves(client, people):

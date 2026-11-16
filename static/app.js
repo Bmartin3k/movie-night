@@ -131,7 +131,8 @@ function suggestionCard(m, kind) {
   let why = "";
   if (m.reason) why = `<div class="why">${esc(m.reason)}</div>`;
   if (kind === "watchlist" && m.saved_for_names?.length)
-    why = `<div class="loved">Saved for ${m.saved_for_names.length === state.people.length && state.people.length > 1 ? "everyone" : m.saved_for_names.map(esc).join(", ")}</div>` + why;
+    why = `<div class="loved">Saved for ${m.saved_for_names.length === state.people.length && state.people.length > 1 ? "everyone" : m.saved_for_names.map(esc).join(", ")}</div>`
+      + (m.rewatch?.length ? `<div class="seen-by">✓ ${m.rewatch.map((r) => `${esc(r.name)} rated it ${fmtR(r.rating)}`).join(", ")}</div>` : "") + why;
   else {
     if (m.seen_by) why += `<div class="seen-by">✓ Seen by ${m.seen_by.map(esc).join(", ")}${m.five_by?.length ? ` · ${m.five_by.map(esc).join(" & ")} rated it 4½★+` : ""}</div>`;
     if (m.loved_by) why += `<div class="loved">${m.loved_by.map((l) => `${esc(l.name)} rated it ${fmtR(l.rating)}`).join(", ")}</div>`;
