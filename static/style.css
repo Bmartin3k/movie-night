@@ -268,3 +268,5 @@ button.link { background: none; border: 0; padding: .2rem 0; color: inherit; opa
 .set-test.ok { color: #6fcf7f; }
 .set-test.bad { color: #ff7b7b; }
 .small-btn { font-size: .75rem; padding: .2rem .5rem; }
+#unlock-dialog { width: min(360px, calc(100vw - 32px)); }
+#unlock-dialog input { width: 100%; }

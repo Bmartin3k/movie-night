@@ -166,13 +166,28 @@
     <p class="muted small">API keys and connections. What you save here takes over from the <code>.env</code> file
       straight away, no restart. Saved keys are never shown again, only their last 4 characters; leave a key box
       empty to keep it. They're kept in <code>data/settings.json</code> (owner-only, not in backups).
-      Changing a Radarr or Emby URL needs its key typed again. Anyone who can open this app can change these.</p>
+      Changing a Radarr or Emby URL needs its key typed again. Set a password at the bottom so only grown-ups can change these.</p>
     <div id="settings-body"></div>
     <p id="settings-error" class="error"></p>
     <div class="actions">
       <span class="spacer"></span>
       <button type="button" id="settings-close" class="ghost">Close</button>
       <button type="submit" class="primary" id="settings-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- settings password prompt -->
+<dialog id="unlock-dialog">
+  <form id="unlock-form">
+    <h2>🔒 Grown-ups only</h2>
+    <p class="muted small">This needs the settings password.</p>
+    <input id="unlock-pw" type="password" autocomplete="current-password" aria-label="Settings password" required>
+    <p id="unlock-error" class="error"></p>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" id="unlock-cancel" class="ghost">Cancel</button>
+      <button type="submit" class="primary">Unlock</button>
     </div>
   </form>
 </dialog>

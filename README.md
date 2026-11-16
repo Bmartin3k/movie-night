@@ -87,6 +87,10 @@ Then, in the app:
    (readable only by the app's user, mode 600, and kept out of the database and its backups) and never shown again,
    only their last 4 characters. **Use .env** forgets a saved value. Changing the Radarr or Emby URL needs its
    API key typed again, so a changed URL can't be used to send your saved key to some other server.
+   At the bottom of Settings you can set a **settings password**. Nobody has to log in to browse or rate, but
+   Settings, age limits, birthdates and removing someone then ask for it (unlocking lasts 15 minutes from the last
+   change, per browser; 5 wrong guesses pause tries for a minute). Forgot it? On the server, delete the `"_password"`
+   line from `data/settings.json`.
 1. Tap **👤 Who's rating?** → **Manage people** and add everyone in the household. Add an "also known as" name for
    anyone whose Emby user or Netflix profile has a different name, plus a birthdate / kid setting for kids if you like.
 2. Pick who's rating on this device, and start adding movies: search in **Watched**, sync Emby, or import

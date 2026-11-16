@@ -16,7 +16,7 @@ const state = {
   group: (() => { try { return JSON.parse(lsGet("group") || "[]"); } catch { return []; } })(),
 };
 
-async function api(path, opts = {}) {
+async function api(path, opts = {}, retried = false) {
   const res = await fetch("/api" + path, {
     ...opts,
     headers: opts.body ? { "Content-Type": "application/json" } : {},
@@ -24,8 +24,31 @@ async function api(path, opts = {}) {
   });
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
+  // grown-up only (Settings, age limits...): ask for the settings password once, then try again
+  if (res.status === 403 && data.locked && !retried && await askPassword()) return api(path, opts, true);
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
+}
+
+// ---------- settings password prompt (only shown when a protected change needs it)
+function askPassword() {
+  const dlg = $("#unlock-dialog");
+  $("#unlock-pw").value = ""; $("#unlock-error").textContent = "";
+  dlg.showModal(); $("#unlock-pw").focus();
+  return new Promise((resolve) => {
+    const done = (ok) => { dlg.close(); $("#unlock-form").onsubmit = null; $("#unlock-cancel").onclick = null; dlg.oncancel = null; resolve(ok); };
+    $("#unlock-cancel").onclick = () => done(false);
+    dlg.oncancel = () => done(false);
+    $("#unlock-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const res = await fetch("/api/unlock", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: $("#unlock-pw").value }) });
+      if (res.ok) return done(true);
+      const d = await res.json().catch(() => ({}));
+      $("#unlock-error").textContent = d.error || "Wrong password";
+      $("#unlock-pw").select();
+    };
+  });
 }
 
 // ---------- people helpers
@@ -245,14 +268,15 @@ $("#people-rows").addEventListener("change", async (e) => {
     await api(`/people/${row.dataset.pid}`, { method: "PUT", body: { [e.target.dataset.f]: e.target.value } });
     $("#people-error").textContent = "";
     await peopleChanged();
-  } catch (err) { $("#people-error").textContent = err.message; }
+  } catch (err) { $("#people-error").textContent = err.message; renderPeopleDialog(); }
 });
 $("#people-rows").addEventListener("click", async (e) => {
   const b = e.target.closest("[data-act=del]");
   if (!b) return;
   const p = person(Number(b.closest("[data-pid]").dataset.pid));
   if (!confirm(`Remove ${p.name}? Their ${p.rated} ratings are deleted too.`)) return;
-  await api(`/people/${p.id}`, { method: "DELETE" });
+  try { await api(`/people/${p.id}`, { method: "DELETE" }); }
+  catch (err) { $("#people-error").textContent = err.message; return; }
   await peopleChanged();
   await loadMovies();
 });
@@ -1081,8 +1105,22 @@ async function openSettings() {
   $("#settings-error").textContent = "";
   $("#settings-body").innerHTML = `<div class="spinner">Loading…</div>`;
   $("#settings-dialog").showModal();
-  try { settingsList = await api("/settings"); } catch (err) { $("#settings-error").textContent = err.message; return; }
+  try { settingsList = await api("/settings"); state.lock = await api("/lock"); }
+  catch (err) { $("#settings-dialog").close(); if (!/Locked/.test(err.message)) alert(err.message); return; }
   renderSettings();
+}
+function passwordSection() {
+  const on = state.lock?.password_set;
+  return `<div class="set-svc" id="pw-section">
+    <h3>Settings password <span class="spacer"></span>${on ? `<button type="button" class="ghost" data-pw="lock">🔒 Lock now</button>` : ""}</h3>
+    <div class="muted small note">${on
+      ? "On. Settings, age limits, birthdates and removing someone ask for it; everything else stays open. Unlocking lasts 15 minutes from the last change."
+      : "Off. Set one so kids can use the app but can't change Settings, age limits or birthdates, or remove anyone."}</div>
+    <label>${on ? "New password" : "Password"}
+      <span class="set-field"><input id="pw-new" type="password" autocomplete="new-password" placeholder="at least 4 characters">
+        <button type="button" class="ghost" data-pw="set">${on ? "Change" : "Set"}</button>
+        ${on ? `<button type="button" class="ghost small-btn" data-pw="off">Turn off</button>` : ""}</span>
+    </label><div class="set-test" id="pw-msg"></div></div>`;
 }
 function renderSettings() {
   $("#settings-body").innerHTML = Object.entries(SERVICES).map(([svc, [name, note, link]]) => {
@@ -1099,7 +1137,7 @@ function renderSettings() {
       <h3>${esc(name)} <span class="spacer"></span><button type="button" class="ghost" data-test="${svc}">Test</button></h3>
       <div class="muted small note">${esc(note)} ${link ? `<a href="${link}" target="_blank" rel="noopener">Get a key</a>` : ""}</div>
       ${fields}<div class="set-test"></div></div>`;
-  }).join("");
+  }).join("") + passwordSection();
 }
 function settingsChanges() {
   const body = {};
@@ -1125,6 +1163,20 @@ $("#settings-form").addEventListener("submit", async (e) => {
   catch (err) { $("#settings-error").textContent = err.message; }
 });
 $("#settings-body").addEventListener("click", async (e) => {
+  const pw = e.target.closest("[data-pw]");
+  if (pw) {
+    try {
+      if (pw.dataset.pw === "lock") { await api("/lock", { method: "POST" }); $("#settings-dialog").close(); return; }
+      if (pw.dataset.pw === "off" && !confirm("Turn the settings password off? Anyone could change Settings and age limits again.")) return;
+      const v = pw.dataset.pw === "off" ? "" : $("#pw-new").value;
+      if (pw.dataset.pw === "set" && v.length < 4) { $("#pw-msg").className = "set-test bad"; $("#pw-msg").textContent = "Use at least 4 characters"; return; }
+      state.lock = await api("/password", { method: "PUT", body: { password: v } });
+      renderSettings();
+      $("#pw-msg").className = "set-test ok";
+      $("#pw-msg").textContent = v ? "✓ Password saved. Remember it: resetting it means editing data/settings.json on the server." : "Password turned off.";
+    } catch (err) { $("#pw-msg").className = "set-test bad"; $("#pw-msg").textContent = err.message; }
+    return;
+  }
   const forget = e.target.closest("[data-forget]"), test = e.target.closest("[data-test]");
   try {
     if (forget) { await saveSettings({ ...settingsChanges(), [forget.dataset.forget]: null }); renderSettings(); }

@@ -22,7 +22,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import anthropic
 import requests
-from flask import Flask, g, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, request, send_from_directory, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 DB_PATH = os.environ.get("DB_PATH", "/data/movies.db")
 TMDB_KEY = os.environ.get("TMDB_API_KEY", "").strip()
@@ -234,13 +235,29 @@ SETTINGS_PATH = os.path.join(os.path.dirname(DB_PATH) or ".", "settings.json")
 URL_KEY = {"RADARR_URL": "RADARR_API_KEY", "EMBY_URL": "EMBY_API_KEY"}   # changing a URL needs its key re-entered
 
 
-def saved_settings(conn=None):
+def settings_file():
+    """The whole file: saved settings plus "_password" (a hash) and "_secret" (signs the unlock cookie)."""
     try:
         with open(SETTINGS_PATH) as f:
             d = json.load(f)
+        return d if isinstance(d, dict) else {}
     except (FileNotFoundError, ValueError):
         return {}
-    return {k: str(v) for k, v in d.items() if k in SETTING_KEYS}
+
+
+def saved_settings(conn=None):
+    return {k: str(v) for k, v in settings_file().items() if k in SETTING_KEYS}
+
+
+def update_settings_file(**changes):
+    """Set keys (None removes one) and write the file back, keeping everything else in it."""
+    d = settings_file()
+    for k, v in changes.items():
+        if v is None:
+            d.pop(k, None)
+        else:
+            d[k] = v
+    write_settings(d)
 
 
 def write_settings(d):
@@ -266,7 +283,7 @@ def _settings_out_of_db(conn):
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'").fetchone():
         rows = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM settings") if r[0] in SETTING_KEYS}
         if rows:
-            write_settings({**saved_settings(), **rows})
+            update_settings_file(**rows)
         conn.execute("DROP TABLE settings")
         conn.commit()
 
@@ -802,9 +819,91 @@ def status():
                    emby_pending=pending, last_backup=last_backup(), people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
 
 
+# ---------------------------------------------------------------- settings password
+# Optional. When set, Settings and the household's grown-up controls (age limits, birthdates, removing someone)
+# need it; everything else stays open, so nobody has to log in to rate or browse. Unlocking lasts 15 minutes from
+# the last protected change, per browser (a signed cookie). Forgot it? Delete "_password" from data/settings.json.
+UNLOCK_SECONDS = 15 * 60
+_unlock_fails = {"n": 0, "until": 0.0}
+
+
+def _secret():
+    d = settings_file()
+    if not d.get("_secret"):
+        import secrets
+        update_settings_file(_secret=secrets.token_hex(32))
+        d = settings_file()
+    return d["_secret"]
+
+
+app.secret_key = _secret()
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict")
+
+
+def password_set():
+    return bool(settings_file().get("_password"))
+
+
+def unlocked():
+    if not password_set():
+        return True
+    if session.get("unlocked_until", 0) > time.time():
+        session["unlocked_until"] = time.time() + UNLOCK_SECONDS     # sliding: stays open while in use
+        return True
+    return False
+
+
+def locked_response():
+    return jsonify(error="Locked: enter the settings password", locked=True), 403
+
+
+@app.get("/api/lock")
+def lock_state():
+    return jsonify(password_set=password_set(), unlocked=unlocked())
+
+
+@app.post("/api/unlock")
+def unlock():
+    if time.time() < _unlock_fails["until"]:
+        return jsonify(error=f"Too many tries. Wait {int(_unlock_fails['until'] - time.time()) + 1} seconds."), 429
+    pw = str((request.get_json(silent=True) or {}).get("password") or "")
+    h = settings_file().get("_password")
+    if h and not check_password_hash(h, pw):
+        _unlock_fails["n"] += 1
+        if _unlock_fails["n"] >= 5:             # 5 wrong in a row: a minute's pause
+            _unlock_fails.update(n=0, until=time.time() + 60)
+        time.sleep(1)
+        return jsonify(error="Wrong password"), 403
+    _unlock_fails["n"] = 0
+    session["unlocked_until"] = time.time() + UNLOCK_SECONDS
+    return jsonify(password_set=bool(h), unlocked=True)
+
+
+@app.post("/api/lock")
+def lock():
+    session.pop("unlocked_until", None)
+    return jsonify(password_set=password_set(), unlocked=unlocked())
+
+
+@app.put("/api/password")
+def set_password():
+    """{"password": "new"} sets or changes it (needs to be unlocked); {"password": ""} turns it off."""
+    if not unlocked():
+        return locked_response()
+    pw = str((request.get_json(silent=True) or {}).get("password") or "")
+    if pw and len(pw) < 4:
+        return jsonify(error="Use at least 4 characters"), 400
+    update_settings_file(_password=generate_password_hash(pw) if pw else None)
+    if pw:
+        session["unlocked_until"] = time.time() + UNLOCK_SECONDS
+    return jsonify(password_set=bool(pw), unlocked=True)
+
+
 @app.get("/api/settings")
 def get_settings():
     """Each setting with where its value comes from. Secrets are never sent back, only their last 4 characters."""
+    if not unlocked():
+        return locked_response()
     conn = db()
     out = []
     for key, label, service, secret in SETTINGS:
@@ -822,6 +921,8 @@ def get_settings():
 @app.put("/api/settings")
 def put_settings():
     """{"KEY": "value"} saves it (overrides .env); {"KEY": null} forgets the saved value (back to .env)."""
+    if not unlocked():
+        return locked_response()
     b = request.get_json(force=True) or {}
     conn = db()
     for k in b:
@@ -833,13 +934,7 @@ def put_settings():
             new, cur = b[url_k].strip().rstrip("/"), setting(conn, url_k)[0].rstrip("/")
             if new != cur and new and setting(conn, key_k)[0] and not (isinstance(b.get(key_k), str) and b[key_k].strip()):
                 return jsonify(error=f"Changing the {url_k.split('_')[0].title()} URL: enter its API key again too"), 400
-    saved = saved_settings()
-    for k, v in b.items():
-        if v is None:
-            saved.pop(k, None)
-        else:
-            saved[k] = str(v).strip()[:500]
-    write_settings(saved)
+    update_settings_file(**{k: (None if v is None else str(v).strip()[:500]) for k, v in b.items()})
     apply_settings(conn)
     return get_settings()
 
@@ -847,6 +942,8 @@ def put_settings():
 @app.post("/api/settings/test/<service>")
 def test_settings(service):
     """Check the current values against the real service. -> {"ok": bool, "message": str}"""
+    if not unlocked():
+        return locked_response()
     try:
         if service == "tmdb":
             if not TMDB_KEY:
@@ -966,6 +1063,8 @@ def add_person():
         p = clean_person(request.get_json(force=True))
     except ValueError as e:
         return jsonify(error=str(e)), 400
+    if p.get("max_cert") and not unlocked():
+        return locked_response()
     conn = db()
     try:
         cur = conn.execute("INSERT INTO people (name, emoji, aliases, max_cert, created_at) VALUES (?,?,?,?,?)",
@@ -974,6 +1073,9 @@ def add_person():
         return jsonify(error=f"{p['name']} already exists"), 409
     conn.commit()
     return jsonify(dict(conn.execute("SELECT * FROM people WHERE id=?", (cur.lastrowid,)).fetchone())), 201
+
+
+PROTECTED_PERSON_FIELDS = {"max_cert", "birthdate", "count_from_age"}
 
 
 @app.put("/api/people/<int:pid>")
@@ -986,6 +1088,8 @@ def update_person(pid):
         p = clean_person(request.get_json(force=True), partial=True)
     except ValueError as e:
         return jsonify(error=str(e)), 400
+    if PROTECTED_PERSON_FIELDS & set(p) and not unlocked():     # kids can't lift their own limits
+        return locked_response()
     # Renaming keeps the old name as an alias so Emby/Netflix links don't break
     if "name" in p and p["name"].lower() != cur["name"].lower():
         p["aliases"] = merge_names(p.get("aliases", cur["aliases"]), cur["name"])
@@ -1001,6 +1105,8 @@ def update_person(pid):
 
 @app.delete("/api/people/<int:pid>")
 def delete_person(pid):
+    if not unlocked():
+        return locked_response()
     conn = db()
     conn.execute("DELETE FROM people WHERE id=?", (pid,))   # their ratings go with them (cascade)
     watchlist_prune(conn)                                    # and their watchlist saves

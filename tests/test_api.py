@@ -421,3 +421,36 @@ def test_settings_override_env_and_never_return_secrets(client, monkeypatch):
     monkeypatch.delenv("OMDB_API_KEY")
     monkeypatch.delenv("RADARR_URL")
     A.apply_settings(A.connect())                   # don't leak these into other tests
+
+
+def test_settings_password_guards_grown_up_changes_only(client, people, monkeypatch):
+    monkeypatch.setattr(A.time, "sleep", lambda s: None)             # no 1s pause on wrong guesses
+    alex = people["Alex"]
+    assert client.get("/api/lock").get_json() == {"password_set": False, "unlocked": True}
+    assert client.put("/api/password", json={"password": "abc"}).status_code == 400      # too short
+    assert client.put("/api/password", json={"password": "grownups"}).status_code == 200
+    assert "grownups" not in open(A.SETTINGS_PATH).read()                                # hashed
+
+    kid = A.app.test_client()                                        # another browser, never unlocked
+    assert kid.get("/api/settings").status_code == 403
+    assert kid.put("/api/settings", json={"CLAUDE_MODEL": "x"}).get_json()["locked"] is True
+    assert kid.put(f"/api/people/{alex}", json={"max_cert": None}).status_code == 403  # can't lift own limit
+    assert kid.put(f"/api/people/{alex}", json={"birthdate": "2000-01-01"}).status_code == 403
+    assert kid.delete(f"/api/people/{people['Jane']}").status_code == 403
+    assert kid.post("/api/people", json={"name": "Free", "max_cert": "PG"}).status_code == 403
+    assert kid.put("/api/password", json={"password": ""}).status_code == 403            # can't turn it off
+    assert kid.put(f"/api/people/{alex}", json={"emoji": "🦖"}).status_code == 200       # everyday edits stay open
+    assert kid.get("/api/people").status_code == 200
+
+    assert kid.post("/api/unlock", json={"password": "nope"}).status_code == 403
+    assert kid.post("/api/unlock", json={"password": "grownups"}).status_code == 200
+    assert kid.put(f"/api/people/{alex}", json={"max_cert": "PG-13"}).status_code == 200
+    kid.post("/api/lock")
+    assert kid.get("/api/settings").status_code == 403
+
+    for _ in range(5):                                               # guessing: a minute's pause after 5 misses
+        kid.post("/api/unlock", json={"password": "guess"})
+    assert kid.post("/api/unlock", json={"password": "grownups"}).status_code == 429
+    A._unlock_fails.update(n=0, until=0.0)
+    assert client.put("/api/password", json={"password": ""}).status_code == 200         # the unlocked browser turns it off
+    assert kid.get("/api/settings").status_code == 200

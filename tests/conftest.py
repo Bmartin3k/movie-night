@@ -27,6 +27,7 @@ def clean_db():
     conn.close()
     A._radarr_lib.update(at=0.0, states={})
     A._omdb_pause_until = 0.0
+    A._unlock_fails.update(n=0, until=0.0)
     if os.path.exists(A.SETTINGS_PATH):
         os.remove(A.SETTINGS_PATH)
     yield
