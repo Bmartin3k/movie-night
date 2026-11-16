@@ -12,7 +12,7 @@ const state = {
   suggestions: null, suggestionsKey: "", editing: null, picked: null, draft: {},
   me: Number(lsGet("me")) || null,
   queueShown: 48, watchedShown: 60,
-  queueScope: "all",   // server now sends only what they could have watched;   // To rate: "all" = everything I haven't rated, "mine" = only what imports credit to me   // render big lists in pages; 1,800 posters at once freezes a phone
+  // big lists render in pages: 1,800 posters at once freezes a phone
   group: (() => { try { return JSON.parse(lsGet("group") || "[]"); } catch { return []; } })(),
 };
 
@@ -381,13 +381,12 @@ function queueCard(q) {
 }
 function visibleQueue() {
   return state.queue.filter((q) =>
-    (state.showNotMe ? q.declined : !q.declined) && (state.queueScope !== "mine" || q.credited || q.declined));
+    (state.showNotMe ? q.declined : !q.declined));
 }
 function renderQueue() {
   const list = visibleQueue();
   const live = state.queue.filter((q) => !q.declined);
   const declinedN = state.queue.length - live.length;
-  const creditedN = live.filter((q) => q.credited).length;
   $("#torate-grid").innerHTML = list.slice(0, state.queueShown).map(queueCard).join("");
   fillRT($("#torate-grid"));                // critic badges for the cards on screen only
   const more = $("#torate-more");
@@ -396,10 +395,6 @@ function renderQueue() {
   $("#torate-empty").hidden = list.length > 0;
   $("#torate-empty").textContent = state.showNotMe ? "Nothing marked as not watched." : meP() ? "All caught up 🎉" : "Pick who's rating (👤) to see your list.";
   $("#count-torate").textContent = live.length || "";
-  $("#scope-all").textContent = `Everything to rate (${live.length})`;
-  $("#scope-mine").textContent = `Imports say I watched (${creditedN})`;
-  $("#scope-mine").classList.toggle("on", state.queueScope === "mine");
-  $("#scope-all").classList.toggle("on", state.queueScope !== "mine");
   const t = $("#notme-toggle");
   t.hidden = !declinedN;
   t.textContent = state.showNotMe ? "← Back to my list" : `Show the ${declinedN} I didn't watch`;
@@ -474,9 +469,6 @@ $("#emby-sync").addEventListener("click", async () => {
   finally { b.disabled = false; b.textContent = "⟳ Sync from Emby"; }
 });
 $("#torate-more").addEventListener("click", () => { state.queueShown += 48; renderQueue(); });
-for (const [id, v] of [["#scope-mine", "mine"], ["#scope-all", "all"]]) {
-  $(id).addEventListener("click", () => { state.queueScope = v; lsSet("queueScope2", v); state.showNotMe = false; state.queueShown = 48; renderQueue(); });
-}
 $("#notme-toggle").addEventListener("click", (e) => {
   e.preventDefault();
   state.showNotMe = !state.showNotMe; state.queueShown = 48;

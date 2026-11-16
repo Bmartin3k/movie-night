@@ -112,9 +112,24 @@ Keys:
 
 TMDB responses are cached in the DB for 7 days, so the Suggestions tab is fast after the first load.
 
+The container runs the app as an ordinary user, not root, and that user owns `data/`. It defaults to user and
+group 1000; if yours differ (`id -u`, `id -g`), set `PUID` / `PGID` in `.env`. `docker ps` shows the container as
+healthy once the app answers.
+
+## Tests
+
+    docker compose build
+    docker run --rm --entrypoint sh -v "$PWD":/src:ro movie-app:local -c \
+      "pip install -q -r /src/requirements-dev.txt && cp -r /src/app.py /src/static /src/tests /tmp/ && cd /tmp && python -m pytest -q tests"
+
+They use a throwaway database and no API keys (TMDB and Radarr are faked), and cover the suggestion scoring,
+the kid limit, the per-person watchlist, Netflix/CSV parsing, the critic-score cache and backups.
+
 ## Files
 - `app.py`: Flask API, scoring (`suggestions()`), Claude prompt (`SYSTEM_PROMPT`, `claude_suggestions()`)
 - `static/`: the page (`index.html`, `style.css`, `app.js`)
+- `tests/`: the test suite
+- `Dockerfile`, `entrypoint.sh`, `compose.yaml`: the container
 
 ## Credits
 

@@ -7,6 +7,7 @@ Each household member rates movies separately. Suggestions are for any group of 
 Movies anyone in the group has seen are never suggested.
 """
 import csv
+import gzip
 import io
 import json
 import math
@@ -443,6 +444,16 @@ def radarr(method, path, **kw):
     return r.json() if r.content else None
 
 
+_radarr_lib = {"at": 0.0, "states": {}}     # {tmdb id: state} for the whole Radarr library, refreshed at most once a minute
+
+
+def radarr_library(fresh=False):
+    if fresh or time.time() - _radarr_lib["at"] > 60:
+        _radarr_lib["states"] = {m["tmdbId"]: radarr_state(m) for m in radarr("GET", "/movie") if m.get("tmdbId")}
+        _radarr_lib["at"] = time.time()
+    return _radarr_lib["states"]
+
+
 def radarr_state(m):
     """Radarr movie -> "downloaded" | "wanted" (monitored, no file yet) | "unmonitored"."""
     if m.get("hasFile"):
@@ -595,6 +606,33 @@ def apply_cert_limit(items, limit, keep=60):
 
 
 # ---------------------------------------------------------------- routes: app
+GZIP_TYPES = ("application/json", "text/html", "text/css", "text/javascript", "application/javascript")
+
+
+@app.after_request
+def gzip_response(resp):
+    """Compress JSON and the page's own files when the browser accepts it: the Watched and To rate lists
+    are several hundred KB of repetitive JSON, which shrinks by about three quarters."""
+    if (resp.status_code != 200 or "gzip" not in request.headers.get("Accept-Encoding", "").lower()
+            or resp.headers.get("Content-Encoding") or not (resp.mimetype or "").startswith(GZIP_TYPES)):
+        return resp
+    resp.direct_passthrough = False
+    data = resp.get_data()
+    if len(data) < 1024:
+        return resp
+    resp.set_data(gzip.compress(data, compresslevel=5))
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers.add("Vary", "Accept-Encoding")
+    return resp
+
+
+@app.get("/healthz")
+def healthz():
+    """For the container health check: the app answers and the database opens."""
+    db().execute("SELECT 1").fetchone()
+    return "ok"
+
+
 @app.get("/")
 def index():
     """index.html with ?v=<file time> on app.js / style.css, so phones pick up a new version on reload."""
@@ -623,7 +661,7 @@ def radarr_status():
     """?ids=603,550 -> {"603": "downloaded" | "wanted" | "unmonitored" | null (not in Radarr)}."""
     ids = [int(x) for x in request.args.get("ids", "").split(",") if x.strip().isdigit()][:100]
     try:
-        have = {m["tmdbId"]: radarr_state(m) for m in radarr("GET", "/movie") if m.get("tmdbId") in ids} if ids else {}
+        have = radarr_library() if ids else {}
     except RadarrError as e:
         return jsonify(error=str(e)), 502
     return jsonify({str(i): have.get(i) for i in ids})
@@ -646,6 +684,7 @@ def radarr_request():
                 radarr("PUT", f"/movie/{m['id']}", json=m)
                 radarr("POST", "/command", json={"name": "MoviesSearch", "movieIds": [m["id"]]})
                 m["monitored"] = True
+            _radarr_lib["at"] = 0                  # refresh on the next status check
             return jsonify(state=radarr_state(m), added=False)
         profiles = radarr("GET", "/qualityprofile")
         roots = radarr("GET", "/rootfolder")
@@ -658,6 +697,7 @@ def radarr_request():
         movie.update(qualityProfileId=prof["id"], rootFolderPath=root, monitored=True,
                      minimumAvailability="released", addOptions={"searchForMovie": True})
         radarr("POST", "/movie", json=movie)
+        _radarr_lib["at"] = 0
     except RadarrError as e:
         return jsonify(error=str(e)), 502
     return jsonify(state="wanted", added=True, profile=prof["name"], root=root)
@@ -1315,7 +1355,8 @@ def claude_suggestions():
     movies = [{"title": m["title"], "year": m["year"]} for m in by_movie.values()
               if any(w["person_id"] in group for w in m["w"])]
     dismissed = conn.execute("SELECT title FROM dismissed WHERE title IS NOT NULL").fetchall()
-    saved = conn.execute("SELECT title, year FROM watchlist").fetchall()
+    for_them = {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
+    saved = [r for r in conn.execute("SELECT tmdb_id, title, year FROM watchlist") if r["tmdb_id"] in for_them]
 
     if len(who) == 1:
         prompt = f"Suggest movies for {who[0]} on their own.\n\nWhat {who[0]} has watched:\n"
@@ -1426,7 +1467,8 @@ TV_MARKERS = re.compile(
 
 
 def norm_title(t):
-    t = unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode().lower()
+    # drop accents (é -> e) but keep other symbols as word breaks, so "WALL·E" matches "WALL-E"
+    t = "".join(c for c in unicodedata.normalize("NFKD", t) if not unicodedata.combining(c)).lower()
     t = t.replace("&", "and")
     t = re.sub(r"[^a-z0-9]+", " ", t)
     return re.sub(r"^(the|a|an) ", "", t.strip())
@@ -1847,27 +1889,6 @@ def emby_sync_route():
         return jsonify(error=str(e)), 502
 
 
-@app.get("/api/emby/queue")
-def emby_queue():
-    conn = db()
-    dec, cut = declined_map(conn), age_cutoffs(conn)
-    out = []
-    for r in conn.execute("SELECT * FROM emby_queue WHERE status='pending' "
-                          "ORDER BY favorite DESC, COALESCE(watched_on,'') DESC"):
-        m = row_to_movie(r)
-        who, unknown, _ = queue_watchers(conn, r["watched_by"], r["tmdb_id"], dec, r["watched_on"], cut)
-        linked, _ = resolve_names(conn, r["watched_by"])
-        young = too_young(linked, r["watched_on"], cut)
-        if young and not (linked - young) and not unknown:
-            continue                      # only credited to people who were too young then: hide it
-        m["too_young"] = sorted(young)
-        m["watchers"] = sorted(who)
-        m["not_watched"] = sorted(dec.get(r["tmdb_id"], set()))
-        m.pop("overview", None)          # not shown on queue cards; keeps a big queue light
-        out.append(m)
-    return jsonify(out)
-
-
 @app.get("/api/torate")
 def torate():
     """One person's To rate list: queued movies credited to them or from a shared account (Emby/rentals,
@@ -1956,26 +1977,6 @@ def mark():
     return "", 204
 
 
-@app.post("/api/emby/queue/<emby_id>/not-me")
-def emby_not_me(emby_id):
-    """A person says they did NOT watch this queued movie (e.g. someone used their Emby account).
-    {"person_id": 1, "undo": false}"""
-    conn = db()
-    q = conn.execute("SELECT tmdb_id FROM emby_queue WHERE emby_id=?", (emby_id,)).fetchone()
-    b = request.get_json(force=True) or {}
-    pid = int(b.get("person_id") or 0)
-    if not q or not q[0]:
-        return jsonify(error="not in queue"), 404
-    if not conn.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone():
-        return jsonify(error="Pick who's rating first"), 400
-    if b.get("undo"):
-        conn.execute("DELETE FROM not_watched WHERE tmdb_id=? AND person_id=?", (q[0], pid))
-    else:
-        conn.execute("INSERT OR IGNORE INTO not_watched VALUES (?,?,?)", (q[0], pid, int(time.time())))
-    conn.commit()
-    return "", 204
-
-
 @app.post("/api/emby/queue/<emby_id>/resolve")
 def emby_resolve(emby_id):
     """Move a queued movie to Watched with exactly these watches (the "Who watched?" dialog).
@@ -2039,14 +2040,6 @@ def emby_rate(emby_id):
     conn.execute("DELETE FROM emby_queue WHERE emby_id=?", (emby_id,))
     if q["tmdb_id"]:
         watchlist_prune(conn, q["tmdb_id"])
-    conn.commit()
-    return "", 204
-
-
-@app.post("/api/emby/queue/<emby_id>/skip")
-def emby_skip(emby_id):
-    conn = db()
-    conn.execute("UPDATE emby_queue SET status='skipped' WHERE emby_id=?", (emby_id,))
     conn.commit()
     return "", 204
 
