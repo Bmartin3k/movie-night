@@ -75,3 +75,7 @@ TMDB responses are cached in the DB for 7 days, so the Suggestions tab is fast a
 ## Files
 - `app.py`: Flask API, scoring (`suggestions()`), Claude prompt (`SYSTEM_PROMPT`, `claude_suggestions()`)
 - `static/`: the page (`index.html`, `style.css`, `app.js`)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
