@@ -321,12 +321,15 @@ def test_show_watched_tags_seen_picks(client, people, add_movie, fake_tmdb):
     recs, _, _ = fake_tmdb
     j, s = people["Jane"], people["Sam"]
     add_movie(1, "Seed", {j: 10})
-    add_movie(101, "Seen pick", {s: 10, j: 6})
-    add_movie(103, "Only 4 stars", {s: 8})
-    recs[1] = [rec(101, "Seen pick"), rec(102, "Fresh pick"), rec(103, "Only 4 stars")]
-    get = lambda q: client.get(f"/api/suggestions?people={j},{s}{q}").get_json()
+    add_movie(101, "Seen pick", {s: 10, j: 9})
+    add_movie(103, "Jane only 3 stars", {s: 10, j: 6})
+    add_movie(104, "Jane hasn't seen", {s: 10})
+    recs[1] = [rec(101, "Seen pick"), rec(102, "Fresh pick"), rec(103, "Jane only 3 stars"), rec(104, "Jane hasn't seen")]
+    get = lambda q, g=f"{j},{s}": client.get(f"/api/suggestions?people={g}{q}").get_json()
     assert [m["title"] for m in get("")] == ["Fresh pick"]
     both = {m["title"]: m for m in get("&watched=1")}
-    assert set(both) == {"Seen pick", "Fresh pick"}          # seen picks only when someone rated them 5★
-    assert both["Seen pick"]["seen_by"] == ["Jane", "Sam"] and both["Seen pick"]["five_by"] == ["Sam"]
+    assert set(both) == {"Seen pick", "Fresh pick"}          # seen picks only when everyone selected rated them 4½★+
+    assert both["Seen pick"]["seen_by"] == ["Jane", "Sam"] and both["Seen pick"]["five_by"] == ["Jane", "Sam"]
+    jane = {m["title"]: m for m in get("&watched=1", str(j))}   # Jane alone: her own 4½★+ counts
+    assert set(jane) == {"Seen pick", "Fresh pick", "Jane hasn't seen"} and "seen_by" not in jane["Jane hasn't seen"]
     assert "seen_by" not in both["Fresh pick"]

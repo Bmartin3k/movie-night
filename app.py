@@ -1190,7 +1190,7 @@ def suggestions():
     popularity/quality term breaks ties. Movies someone *outside* the group loved that nobody in the
     group has seen are boosted too ("Ben loved this").
 
-    ?watched=1 also returns picks someone in the group has already seen AND rated 5★ (10/10), tagged
+    ?watched=1 also returns picks everyone in the group has rated 4½★+ (9/10 or more), tagged
     "seen_by" / "five_by" (names), mixed in
     where they rank; the unseen picks are (practically) the same as without it.
     """
@@ -1211,12 +1211,13 @@ def suggestions():
         return jsonify([])
     seen = seen_by(conn, group)
     show_seen = request.args.get("watched") == "1"
-    # with ?watched=1, only seen movies someone in the group rated 5★ (10/10) come back
+    # with ?watched=1, only seen movies EVERYONE in the group rated 4½★+ (9/10) come back
     fives = {}
     for r in conn.execute("SELECT m.tmdb_id, w.person_id FROM movies m JOIN watches w ON w.movie_id=m.id "
-                          "WHERE m.tmdb_id IS NOT NULL AND w.rating = 10"):
+                          "WHERE m.tmdb_id IS NOT NULL AND w.rating >= 9"):
         if r[1] in group:
-            fives.setdefault(r[0], []).append(names[r[1]])
+            fives.setdefault(r[0], set()).add(r[1])
+    fives = {t: sorted(names[p] for p in group) for t, ps in fives.items() if ps >= set(group)}
     skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | (set(seen) - set(fives) if show_seen else set(seen))
     saved = saved_map(conn)
 
