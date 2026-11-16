@@ -22,6 +22,9 @@ then get suggestions for one person or any group watching together.
   - *Ask Claude*: sends the whole rated list (with notes) plus an optional mood ("something light for Friday")
     to Claude, which returns 8 picks with a reason for each. For a group it looks for common ground. Uses `claude-opus-5-5` (override with `CLAUDE_MODEL`).
     Each click costs a few cents.
+
+  ![Suggestions for the whole family: kid-safe because Alex is included, with the reason for each pick](docs/suggestions.png)
+
 - **To rate** is per person: only what that person could have watched and hasn't rated. That's movies credited to them
   (their Netflix profile, imports under their name, Watched movies marked seen), plus movies from shared accounts
   (Emby, rentals) watched after their count-from age. Shared-account movies come first, then ones credited to them, newest first.
