@@ -417,15 +417,16 @@ def critic_scores(tid):
         conn.close()
 
 
-def critic_factor(s):
+def critic_factor(s, strength=1.0):
     """Ranking multiplier from the critics: the average of Tomatometer and Metascore (whichever exist),
-    60 = neutral, 100 = x1.2, 0 = x0.7. No scores = x1."""
+    60 = neutral, 100 = x1.2, 0 = x0.7. No scores = x1. strength scales the effect (0.5 for kids'
+    lists: x0.85-x1.1, so acclaimed classics don't crowd out the fun picks)."""
     vals = [int(s["rt"].rstrip("%"))] if s.get("rt") else []
     vals += [s["mc"]] if s.get("mc") is not None else []
     if not vals:
         return 1.0
     c = sum(vals) / len(vals)
-    return 1 + (c - 60) / 40 * 0.2 if c >= 60 else 1 + (c - 60) / 60 * 0.3
+    return 1 + strength * ((c - 60) / 40 * 0.2 if c >= 60 else (c - 60) / 60 * 0.3)
 
 
 def genre_map():
@@ -1025,13 +1026,15 @@ def suggestions():
     out.sort(key=lambda x: x["score"], reverse=True)
     # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
     # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
-    out = apply_cert_limit(out, group_limit(conn, group), keep=150)
+    limit = group_limit(conn, group)
+    out = apply_cert_limit(out, limit, keep=150)
     if OMDB_KEY:
+        strength = 0.5 if limit else 1.0          # half the boost when a kid is in the group
         top = [o for o in out if o.get("tmdb_id")]
         with ThreadPoolExecutor(max_workers=8) as pool:
             for o, s_ in zip(top, pool.map(lambda o: critic_scores(o["tmdb_id"]), top)):
                 o["rt"], o["mc"] = s_["rt"], s_["mc"]
-                o["score"] = round(o["score"] * critic_factor(s_), 2)
+                o["score"] = round(o["score"] * critic_factor(s_, strength), 2)
         out.sort(key=lambda x: x["score"], reverse=True)
     return jsonify(out[:90])
 

@@ -28,7 +28,8 @@ then get suggestions for one person or any group watching together.
     (🍅 fresh at 60%+, 🤢 rotten) and the **Metacritic** Metascore (green 61+, yellow 40–60, red under 40).
     The critics also nudge the ranking: the average of the two scores (or whichever exists) multiplies a
     movie's score, from ×1.2 at 100 down to ×0.7 at 0, with 60 neutral. Your own ratings still matter most;
-    critics mostly reorder close calls. Some movies have no scores on OMDb and are left as they are. **🍅 Fresh only**
+    critics mostly reorder close calls. For any group with a kid setting the boost is halved (×0.85–×1.1).
+    Some movies have no scores on OMDb and are left as they are. **🍅 Fresh only**
     (next to the genre filter) keeps only the Fresh ones in *Because you liked…*; movies with no score are hidden
     too. Each device remembers the setting.
 
