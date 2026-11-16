@@ -25,7 +25,7 @@ then get suggestions for one person or any group watching together.
   - *Ask Claude*: sends the whole rated list (with notes) plus an optional mood ("something light for Friday")
     to Claude, which returns 8 picks with a reason for each. For a group it looks for common ground. Uses `claude-opus-5-5` (override with `CLAUDE_MODEL`).
     Each click costs a few cents.
-  - With an OMDb key, suggestion and watchlist cards also show the **Rotten Tomatoes** Tomatometer
+  - With an OMDb key, suggestion, watchlist and Watched cards also show the **Rotten Tomatoes** Tomatometer
     (🍅 fresh at 60%+, 🤢 rotten) and the **Metacritic** Metascore (green 61+, yellow 40–60, red under 40).
     The critics also nudge the ranking: the average of the two scores (or whichever exists) multiplies a
     movie's score, from ×1.2 at 100 down to ×0.7 at 0, with 60 neutral. Your own ratings still matter most;
@@ -89,7 +89,7 @@ Keys:
   which Emby users are imported, `EMBY_SYNC_HOURS=0` for button-only.
 - `ANTHROPIC_API_KEY`: https://console.anthropic.com/settings/keys. Only needed for Ask Claude.
 - `OMDB_API_KEY`: free at https://www.omdbapi.com/apikey.aspx (activate it from the email). Only needed for
-  Rotten Tomatoes / Metacritic scores and the critics boost; they're cached for a week, so the free 1,000 lookups a day is plenty.
+  Rotten Tomatoes / Metacritic scores and the critics boost; they're cached for a week, so the free 1,000 lookups a day is plenty (Watched only looks up the cards on screen, 60 at a time).
 
 TMDB responses are cached in the DB for 7 days, so the Suggestions tab is fast after the first load.
 

@@ -115,7 +115,7 @@ function watchedCard(m) {
   const mine = myWatch(m);
   const badge = m.avg_rating ? (m.avg_rating / 2).toFixed(1).replace(/\.0$/, "") : "";
   const notes = m.watches.filter((w) => w.notes).map((w) => `<div class="notes">“${esc(w.notes)}” <span class="muted">· ${esc(person(w.person_id)?.name || "")}</span></div>`).join("");
-  return `<article class="card" data-id="${m.id}">
+  return `<article class="card" data-id="${m.id}" data-tmdb="${m.tmdb_id ?? ""}">
     ${poster(m, badge)}
     <div class="body">
       <div class="title">${esc(m.title)}</div>
@@ -309,6 +309,7 @@ function renderWatched() {
   }[sort];
   list = list.sort(by);
   $("#watched-grid").innerHTML = list.slice(0, state.watchedShown).map(watchedCard).join("");
+  fillRT($("#watched-grid"));               // critic badges for the cards on screen only
   const more = $("#watched-more");
   more.hidden = list.length <= state.watchedShown;
   more.textContent = `Show more (${list.length - state.watchedShown} left)`;
