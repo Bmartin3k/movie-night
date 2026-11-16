@@ -328,8 +328,10 @@ def test_show_watched_tags_seen_picks(client, people, add_movie, fake_tmdb):
     get = lambda q, g=f"{j},{s}": client.get(f"/api/suggestions?people={g}{q}").get_json()
     assert [m["title"] for m in get("")] == ["Fresh pick"]
     both = {m["title"]: m for m in get("&watched=1")}
-    assert set(both) == {"Seen pick", "Fresh pick"}          # seen picks only when everyone selected rated them 4½★+
+    # seen picks only when everyone selected who rated them gave 4½★+; not having rated it doesn't count against
+    assert set(both) == {"Seen pick", "Fresh pick", "Jane hasn't seen"}
     assert both["Seen pick"]["seen_by"] == ["Jane", "Sam"] and both["Seen pick"]["five_by"] == ["Jane", "Sam"]
+    assert both["Jane hasn't seen"]["seen_by"] == ["Sam"] and both["Jane hasn't seen"]["five_by"] == ["Sam"]
     jane = {m["title"]: m for m in get("&watched=1", str(j))}   # Jane alone: her own 4½★+ counts
     assert set(jane) == {"Seen pick", "Fresh pick", "Jane hasn't seen"} and "seen_by" not in jane["Jane hasn't seen"]
     assert "seen_by" not in both["Fresh pick"]
