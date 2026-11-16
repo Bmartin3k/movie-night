@@ -585,13 +585,24 @@ def group_limit(conn, group):
     return CERT_ORDER[min(ranks)] if ranks else None
 
 
-def apply_cert_limit(items, limit, keep=60):
+def apply_cert_limit(items, limit, keep=60, counts=None):
     """Annotate items with their US rating; when there is a limit, drop anything above it or unrated.
-    Checks in rank order and stops once `keep` items have passed."""
+    Checks in rank order and stops once `keep` items have passed. With `counts`, only items it's true for
+    count toward `keep` (the others ride along where they rank)."""
+    counts = counts or (lambda it: True)
+
+    def first(lst):             # lst up to and including the keep-th counted item
+        n = 0
+        for i, it in enumerate(lst):
+            n += bool(counts(it))
+            if n == keep:
+                return lst[:i + 1]
+        return lst
+
     if not limit:
-        return items[:keep]
+        return first(items)
     allowed = set(CERT_ORDER[:CERT_ORDER.index(limit) + 1])
-    out = []
+    out, checked = [], 0
     for i in range(0, len(items), 24):
         batch = [it for it in items[i:i + 24] if it.get("tmdb_id")]
         with ThreadPoolExecutor(max_workers=8) as pool:
@@ -600,9 +611,10 @@ def apply_cert_limit(items, limit, keep=60):
             it["cert"] = c
             if c in allowed:
                 out.append(it)
-        if len(out) >= keep or i >= 240:      # don't fan out forever on a big candidate list
+        checked += sum(bool(counts(it)) for it in batch)
+        if sum(bool(counts(it)) for it in out) >= keep or checked >= 264:   # don't fan out forever
             break
-    return out[:keep]
+    return first(out)
 
 
 # ---------------------------------------------------------------- routes: app
@@ -1132,25 +1144,37 @@ def clear_dismissed():
     return "", 204
 
 
-def excluded_ids(conn, group=None):
-    """TMDB ids not to suggest to `group` (person ids; None = everyone): anything someone in the
-    group has seen, anything dismissed, and queued Emby/Netflix movies watched by someone in the
-    group (or by someone not linked to a person yet, to be safe)."""
-    group = set(group) if group is not None else {r[0] for r in conn.execute("SELECT id FROM people")}
-    ids = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")}
-    ids |= {r[0] for r in conn.execute("SELECT tmdb_id, person_id FROM skipped") if r[1] in group}
+def seen_by(conn, group=None):
+    """{tmdb_id: {names}} for movies someone in `group` (person ids; None = everyone) has seen: rated or
+    marked seen, skipped ("seen it, won't rate"), or credited on a queued Emby/Netflix entry. Movies seen
+    by someone not linked to a person yet (or nobody named) count too, as "someone", to be safe."""
+    names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people")}
+    group = set(group) if group is not None else set(names)
+    out = {}
+    add = lambda tid, who: out.setdefault(tid, set()).add(who)
+    for r in conn.execute("SELECT tmdb_id, person_id FROM skipped"):
+        if r[1] in group:
+            add(r[0], names[r[1]])
     for r in conn.execute("SELECT m.tmdb_id, w.person_id FROM movies m LEFT JOIN watches w ON w.movie_id=m.id "
                           "WHERE m.tmdb_id IS NOT NULL"):
-        if r[1] is None or r[1] in group:
-            ids.add(r[0])
+        if r[1] is None:
+            add(r[0], "someone")
+        elif r[1] in group:
+            add(r[0], names[r[1]])
     dec, cut = declined_map(conn), age_cutoffs(conn)
     for r in conn.execute("SELECT tmdb_id, watched_by, watched_on FROM emby_queue WHERE tmdb_id IS NOT NULL"):
         who, unknown, credited = queue_watchers(conn, r[1], r[0], dec, r[2], cut)
-        # unlinked names / no names at all: someone unknown watched it, keep it out to be safe.
         # Everyone credited said "not me": nobody known watched it, so it can be suggested.
-        if unknown or not credited or who & group:
-            ids.add(r[0])
-    return ids
+        for p in who & group:
+            add(r[0], names[p])
+        if unknown or not credited:
+            add(r[0], "someone")
+    return out
+
+
+def excluded_ids(conn, group=None):
+    """TMDB ids not to suggest to `group`: anything dismissed, and anything someone in it has seen."""
+    return {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | set(seen_by(conn, group))
 
 
 # ---------------------------------------------------------------- suggestions: TMDB
@@ -1165,6 +1189,9 @@ def suggestions():
     strongest "similar" match, at half weight, never a sum. Higher-ranked entries count more; a small
     popularity/quality term breaks ties. Movies someone *outside* the group loved that nobody in the
     group has seen are boosted too ("Ben loved this").
+
+    ?watched=1 also returns picks someone in the group has already seen, tagged "seen_by" (names), mixed in
+    where they rank; the unseen picks are (practically) the same as without it.
     """
     if not TMDB_KEY:
         return jsonify(error="TMDB_API_KEY is not set"), 503
@@ -1181,7 +1208,9 @@ def suggestions():
     seeds = {k: v for k, v in seeds.items() if v["in"]}
     if not seeds:
         return jsonify([])
-    skip = excluded_ids(conn, group)
+    seen = seen_by(conn, group)
+    show_seen = request.args.get("watched") == "1"
+    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | (set() if show_seen else set(seen))
     saved = saved_map(conn)
 
     # the strongest seeds first, capped so a big library doesn't fan out into hundreds of calls
@@ -1263,11 +1292,14 @@ def suggestions():
         item["loved_by"] = [{"name": n, "rating": rt} for n, rt in e["fans"]]
     for o in out:
         o["saved"] = set(group) <= saved.get(o["tmdb_id"], set())   # saved for everyone selected
+        if o["tmdb_id"] in seen:
+            o["seen_by"] = sorted(seen[o["tmdb_id"]], key=lambda n: (n == "someone", n))
     out.sort(key=lambda x: x["score"], reverse=True)
     # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
     # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
     limit = group_limit(conn, group)
-    out = apply_cert_limit(out, limit, keep=150)
+    unseen = lambda o: "seen_by" not in o      # with ?watched=1, seen picks ride along where they rank
+    out = apply_cert_limit(out, limit, keep=150, counts=unseen)
     if OMDB_KEY:
         strength = 0.5 if limit else 1.0          # half the boost when a kid is in the group
         top = [o for o in out if o.get("tmdb_id")]
@@ -1278,7 +1310,7 @@ def suggestions():
                 o["rt"], o["mc"] = s_["rt"], s_["mc"]
                 o["score"] = round(o["score"] * critic_factor(s_, strength), 2)
         out.sort(key=lambda x: x["score"], reverse=True)
-    return jsonify(out[:90])
+    return jsonify(apply_cert_limit(out, None, keep=90, counts=unseen))
 
 
 # ---------------------------------------------------------------- suggestions: Claude

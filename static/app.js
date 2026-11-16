@@ -133,6 +133,7 @@ function suggestionCard(m, kind) {
   if (kind === "watchlist" && m.saved_for_names?.length)
     why = `<div class="loved">Saved for ${m.saved_for_names.length === state.people.length && state.people.length > 1 ? "everyone" : m.saved_for_names.map(esc).join(", ")}</div>` + why;
   else {
+    if (m.seen_by) why += `<div class="seen-by">✓ Seen by ${m.seen_by.map(esc).join(", ")}</div>`;
     if (m.loved_by) why += `<div class="loved">${m.loved_by.map((l) => `${esc(l.name)} rated it ${fmtR(l.rating)}`).join(", ")}</div>`;
     if (m.because && m.because.length) {
       const multi = groupIds().length > 1;
@@ -143,9 +144,10 @@ function suggestionCard(m, kind) {
   const btns = kind === "watchlist"
     ? `<button class="ok" data-act="watched">Watched it</button><button data-act="unsave" title="Take it off the watchlist for ${esc(groupLabel())}">Remove</button>
        ${state.status?.radarr && m.tmdb_id ? `<button class="radarr" data-act="radarr" disabled>Radarr…</button>` : ""}`
+    : m.seen_by ? `<button class="ok" data-act="watched" title="Rate it or see your ratings">Rate it</button>`
     : `<button class="ok" data-act="watched" title="Already watched it? Add it to Watched with ratings">Already watched</button>
        ${m.tmdb_id ? `<button data-act="save">${m.saved ? "★ Saved" : "☆ Save"}</button><button data-act="dismiss" title="Not interested">✕</button>` : ""}`;
-  return `<article class="card" data-tmdb="${m.tmdb_id ?? ""}">
+  return `<article class="card${m.seen_by ? " seen-pick" : ""}" data-tmdb="${m.tmdb_id ?? ""}">
     ${poster(m, score)}
     <div class="body">
       <div class="title">${esc(m.title)}</div>
@@ -658,6 +660,7 @@ function renderSuggestions() {
   fb.hidden = !state.status.rt;
   const fresh = state.status.rt && state.freshOnly;
   fb.setAttribute("aria-pressed", String(!!fresh));
+  $("#show-watched").setAttribute("aria-pressed", String(state.showWatched));
   const all = state.suggestions || [];
   all.forEach((m) => { if (m.tmdb_id && "mc" in m && !(m.tmdb_id in rtCache)) rtCache[m.tmdb_id] = { rt: m.rt, mc: m.mc }; });
   const unknown = fresh && all.some((m) => m.tmdb_id && !rtSettled(m.tmdb_id));
@@ -709,7 +712,7 @@ const isFresh = (m) => parseInt(rtCache[m.tmdb_id]?.rt, 10) >= 60;
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();
-  const key = groupIds().join(",");
+  const key = groupIds().join(",") + (state.showWatched ? "&watched=1" : "");
   if (state.suggestions && !force && state.suggestionsKey === key) return renderSuggestions();
   $("#suggest-grid").innerHTML = `<div class="spinner">Finding movies for ${esc(groupLabel())}…</div>`;
   try { state.suggestions = await api("/suggestions?people=" + key); state.suggestionsKey = key; }
@@ -722,6 +725,12 @@ $("#fresh-only").addEventListener("click", () => {
   state.freshOnly = !state.freshOnly;
   lsSet("freshOnly", state.freshOnly ? "1" : "");
   renderSuggestions();
+});
+state.showWatched = lsGet("showWatched") === "1";
+$("#show-watched").addEventListener("click", () => {
+  state.showWatched = !state.showWatched;
+  lsSet("showWatched", state.showWatched ? "1" : "");
+  loadSuggestions();
 });
 $("#refresh-suggest").addEventListener("click", () => loadSuggestions(true));
 // ---------- dismissed picks: bring back one at a time, or all

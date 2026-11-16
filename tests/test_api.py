@@ -315,3 +315,16 @@ def test_backup_is_complete_verified_and_pruned(client, people, add_movie, monke
     left = sorted(os.listdir(A.backup_dir()))
     assert left == ["keep-me.txt", "movies-2020-01-03.db", os.path.basename(path)]
     assert A.last_backup() == os.path.basename(path)[7:17]
+
+
+def test_show_watched_tags_seen_picks(client, people, add_movie, fake_tmdb):
+    recs, _, _ = fake_tmdb
+    j, s = people["Jane"], people["Sam"]
+    add_movie(1, "Seed", {j: 10})
+    add_movie(101, "Seen pick", {s: 8})
+    recs[1] = [rec(101, "Seen pick"), rec(102, "Fresh pick")]
+    get = lambda q: client.get(f"/api/suggestions?people={j},{s}{q}").get_json()
+    assert [m["title"] for m in get("")] == ["Fresh pick"]
+    both = {m["title"]: m for m in get("&watched=1")}
+    assert set(both) == {"Seen pick", "Fresh pick"}
+    assert both["Seen pick"]["seen_by"] == ["Sam"] and "seen_by" not in both["Fresh pick"]
