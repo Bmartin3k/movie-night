@@ -92,6 +92,10 @@ Then, in the app:
    Settings, age limits, birthdates and removing someone then ask for it (unlocking lasts 15 minutes from the last
    change, per browser; 5 wrong guesses pause tries for a minute). Forgot it? On the server, delete the `"_password"`
    line from `data/settings.json`.
+   Each person can have a 4-digit **PIN** (🔑 in Manage people). Picking them in **👤 Who's rating?** asks for it once
+   per device (the browser remembers, in a signed cookie). You can only change or remove your **own** ratings and marks;
+   for others you can still add a first rating or "seen" (handy after a family movie night). With the settings
+   password unlocked, a grown-up can change anyone's ratings and reset a forgotten PIN.
 1. Tap **👤 Who's rating?** → **Manage people** and add everyone in the household. Add an "also known as" name for
    anyone whose Emby / Jellyfin / Plex user or Netflix profile has a different name, plus a birthdate / kid setting for kids if you like.
 2. Pick who's rating on this device, and start adding movies: search in **Watched**, sync your media server, or import
