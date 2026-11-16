@@ -575,3 +575,16 @@ def test_settings_password_overrides_pins(client, people, add_movie):
     assert client.put(f"/api/movies/{m['id']}", json={"ratings": [{"person_id": j, "rating": 7}]}).status_code == 403
     client.post("/api/unlock", json={"password": "grownups"})
     assert client.put(f"/api/people/{s}/pin", json={"pin": ""}).status_code == 200   # grown-up resets a PIN
+
+
+def test_everyone_in_the_group_gets_an_equal_say(client, people, add_movie, fake_tmdb):
+    recs, _, _ = fake_tmdb
+    j, s = people["Jane"], people["Sam"]
+    for i in range(100):                               # Jane has rated 100 movies at 5★, each with its own pick
+        add_movie(1000 + i, f"Jane seed {i}", {j: 10})
+        recs[1000 + i] = [rec(5000 + i, f"Jane pick {i}")]
+    add_movie(1, "Sam's one favourite", {s: 9})        # Sam has one 4½★
+    recs[1] = [rec(9000, "Sam pick")]
+    got = {m["title"]: m["score"] for m in client.get(f"/api/suggestions?people={j},{s}").get_json()}
+    assert got["Sam pick"] == max(got.values())        # his one favourite counts as much as her best
+    assert len([t for t in got if t.startswith("Jane pick")]) == 40   # she gets her share of seeds (80 / 2)

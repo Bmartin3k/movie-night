@@ -1669,8 +1669,16 @@ def suggestions():
     # already on the group's watchlist (saved for anyone selected, same as the Watchlist tab shows): not suggested again
     skip |= {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
 
-    # the strongest seeds first, capped so a big library doesn't fan out into hundreds of calls
-    ranked = sorted(seeds.items(), key=lambda kv: -abs(sum(r for _, r in kv[1]["in"]) / len(kv[1]["in"]) - 5.5))[:80]
+    # The strongest seeds first, capped so a big library doesn't fan out into hundreds of calls. Each person in the
+    # group gets an equal share of the cap from their OWN strongest ratings, so someone with 900 ratings can't
+    # crowd out a kid with 30.
+    per = max(20, 80 // len(group))
+    picked = set()
+    for pid in group:
+        mine = sorted((t for t, v in seeds.items() if any(p == pid for p, _ in v["in"])),
+                      key=lambda t: -abs(next(r for p, r in seeds[t]["in"] if p == pid) - 5.5))
+        picked |= set(mine[:per])
+    ranked = [(t, seeds[t]) for t in picked]
     # Dismissed picks ("Not interested") count as a mild dislike: a quarter of a 1★ rating's pull, so one
     # dismissal barely moves anything but a pattern of them (say, several animated Batman films) sinks what
     # TMDB links to them. Household-wide, like dismissing itself.
@@ -1691,26 +1699,46 @@ def suggestions():
         results = dict(pool.map(fetch, [(t, k) for t, _ in ranked for k, _ in SOURCES]))
 
     genres = genre_map()
+    # Scored per person ("voice" = a person id, or "dismissed" for the household's ✕ picks), then each person's
+    # scores are scaled to the same size before adding up, so everyone in the group gets an equal say however
+    # many movies they've rated. With one person this changes nothing.
     cands = {}
     for tid, seed in ranked:
         if seed.get("dismissed"):
-            w, fans, avg = DISMISS_WEIGHT, [], None
+            voices = [("dismissed", DISMISS_WEIGHT)]
+            fans, avg = [], None
         else:
-            w = sum(r - 5.5 for _, r in seed["in"]) / len(seed["in"])
+            voices = [(p, r - 5.5) for p, r in seed["in"]]
             fans = [names.get(p) for p, r in seed["in"] if r >= 8]
             avg = round(sum(r for _, r in seed["in"]) / len(seed["in"]), 1)
         for kind, kw in SOURCES:
             for pos, m in enumerate(results.get((tid, kind), [])):
                 if m["id"] in skip or m["id"] == tid:
                     continue
-                c = cands.setdefault(m["id"], {"movie": m, "score": 0.0, "sim_hi": 0.0, "sim_lo": 0.0, "because": {}})
-                v = w * kw * (1 - pos / 40)
-                if kind == "recommendations":
-                    c["score"] += v
-                else:                          # similar: keep only the strongest pull each way
-                    c["sim_hi"], c["sim_lo"] = max(c["sim_hi"], v), min(c["sim_lo"], v)
-                if w > 0:      # one "Because of" entry per seed, even if both lists have it
-                    c["because"][tid] = (w, seed["title"], fans, avg, len(seed["in"]))
+                c = cands.setdefault(m["id"], {"movie": m, "rec": {}, "sim_hi": {}, "sim_lo": {}, "because": {}})
+                for voice, w in voices:
+                    v = w * kw * (1 - pos / 40)
+                    if kind == "recommendations":
+                        c["rec"][voice] = c["rec"].get(voice, 0.0) + v
+                    else:                      # similar: keep only the strongest pull each way, per person
+                        c["sim_hi"][voice] = max(c["sim_hi"].get(voice, 0.0), v)
+                        c["sim_lo"][voice] = min(c["sim_lo"].get(voice, 0.0), v)
+                    if w > 0:  # one "Because of" entry per seed, even if both lists have it
+                        b = c["because"].setdefault(tid, {"w": {}, "info": (seed["title"], fans, avg, len(seed["in"]))})
+                        b["w"][voice] = max(b["w"].get(voice, 0.0), v)
+    raw = {}
+    for cid, c in cands.items():
+        for voice in set(c["rec"]) | set(c["sim_hi"]) | set(c["sim_lo"]):
+            raw.setdefault(voice, {})[cid] = (c["rec"].get(voice, 0.0) + c["sim_hi"].get(voice, 0.0)
+                                              + c["sim_lo"].get(voice, 0.0))
+    peak = {v: max([x for x in sc.values() if x > 0] or [0]) for v, sc in raw.items() if v != "dismissed"}
+    size = sum(peak.values()) / len(peak) if peak else 0
+    scale = {v: (size / pk if pk else 0) for v, pk in peak.items()}
+    scale["dismissed"] = 1.0
+    for cid, c in cands.items():
+        c["score"] = sum(raw[v].get(cid, 0.0) * scale[v] for v in raw)
+        c["because"] = {t: (sum(x * scale.get(v, 1.0) for v, x in b["w"].items()), *b["info"])
+                        for t, b in c["because"].items()}
 
     # loved by someone outside the group, unseen by the group: a direct, strong signal
     loved_elsewhere = {}
@@ -1724,7 +1752,6 @@ def suggestions():
 
     out = []
     for c in cands.values():
-        c["score"] += c["sim_hi"] + c["sim_lo"]
         if c["score"] <= 0 or not c["because"]:
             continue
         m = c["movie"]
