@@ -7,7 +7,7 @@ services:
     container_name: movie-app
     restart: unless-stopped
     ports:
-      - "8095:8000"
+      - "${PORT:-8095}:8000"          # set PORT in .env to change it
     env_file: .env
     volumes:
       - ./data:/data

@@ -4,7 +4,7 @@ Log the movies the household has watched. Each person rates separately (1–5 st
 then get suggestions for one person or any group watching together.
 
 - **People** (👤 button → Manage people): add each household member. "Also known as" holds their Emby user /
-  Netflix profile name (e.g. Blake = `Bmartin`) so imported history is credited to them. With a **birthdate**, imported viewings from before
+  Netflix profile name (e.g. Jane = `jsmith`) so imported history is credited to them. With a **birthdate**, imported viewings from before
   "count history from age" (default 5) don't count for that person: hidden from their To rate, and not "seen" for suggestions. Each device remembers
   who's rating; tap 👤 to switch. A **kid setting** per person (up to PG-13 / PG / G) keeps every suggestion
   list that includes them within that US rating (from TMDB; movies with no US rating are left out).
@@ -43,10 +43,23 @@ then get suggestions for one person or any group watching together.
   and the fix is remembered so later Emby syncs / Netflix / CSV imports use it. Switching back undoes it.
 - **Watchlist**: suggestions saved with ☆ Save. Marking one "Watched it" moves it to Watched.
 
-## Run
+## Set up
 
-    cp .env.example .env && chmod 600 .env   # then add the keys
-    docker compose up -d --build              # http://<this-machine>:8095
+You need a machine with Docker (with the Compose plugin) and a free TMDB API key. Emby and Anthropic keys are optional.
+
+    git clone <repo-url> movie-night && cd movie-night
+    cp .env.example .env && chmod 600 .env   # then add your keys (see below)
+    docker compose up -d --build              # open http://<this-machine>:8095
+
+Then, in the app:
+1. Tap **👤 Who's rating?** → **Manage people** and add everyone in the household. Add an "also known as" name for
+   anyone whose Emby user or Netflix profile has a different name, plus a birthdate / kid setting for kids if you like.
+2. Pick who's rating on this device, and start adding movies: search in **Watched**, sync Emby, or import
+   Netflix / CSV history from the **To rate** tab.
+3. Once a few movies are rated, try **Suggestions**.
+
+Port 8095 already taken? Set `PORT=` in `.env`. The app has **no login**: keep it on your home network
+(or behind a reverse proxy with authentication), not open to the internet.
 
 After editing `.env` or the code: `docker compose up -d --build`. Data lives in `data/movies.db` (SQLite). Back it up with the folder.
 

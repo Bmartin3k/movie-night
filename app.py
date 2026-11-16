@@ -215,7 +215,7 @@ def people_by_alias(conn):
 
 
 def resolve_names(conn, names):
-    """'Bmartin, Nana' -> ({person ids}, [names not linked to anyone])"""
+    """'jsmith, Grandma' -> ({person ids}, [names not linked to anyone])"""
     idx = people_by_alias(conn)
     ids, unknown = set(), []
     for n in (names or "").split(","):
