@@ -22,6 +22,8 @@ then get suggestions for one person or any group watching together.
   - *Ask Claude*: sends the whole rated list (with notes) plus an optional mood ("something light for Friday")
     to Claude, which returns 8 picks with a reason for each. For a group it looks for common ground. Uses `claude-opus-5-5` (override with `CLAUDE_MODEL`).
     Each click costs a few cents.
+  - With an OMDb key, suggestion and watchlist cards also show the **Rotten Tomatoes** Tomatometer
+    (🍅 fresh at 60%+, 🤢 rotten). Some movies have no score on OMDb and just show no badge.
 
   ![Suggestions for the whole family: kid-safe because Alex is included, with the reason for each pick](docs/suggestions.png)
 
@@ -77,6 +79,8 @@ Keys:
 - `EMBY_URL` / `EMBY_API_KEY`: Emby Dashboard → Advanced → API Keys. Optional `EMBY_USERS=Ben,Jess` to limit
   which Emby users are imported, `EMBY_SYNC_HOURS=0` for button-only.
 - `ANTHROPIC_API_KEY`: https://console.anthropic.com/settings/keys. Only needed for Ask Claude.
+- `OMDB_API_KEY`: free at https://www.omdbapi.com/apikey.aspx (activate it from the email). Only needed for
+  Rotten Tomatoes scores; they're cached for a week, so the free 1,000 lookups a day is plenty.
 
 TMDB responses are cached in the DB for 7 days, so the Suggestions tab is fast after the first load.
 
@@ -88,6 +92,7 @@ TMDB responses are cached in the DB for 7 days, so the Suggestions tab is fast a
 
 Made by Blake Martin. Movie details, posters and recommendations come from [TMDB](https://www.themoviedb.org/).
 This product uses the TMDB API but is not endorsed or certified by TMDB.
+Rotten Tomatoes scores come from [OMDb](https://www.omdbapi.com/).
 
 ## License
 

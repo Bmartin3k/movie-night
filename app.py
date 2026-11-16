@@ -33,6 +33,7 @@ EMBY_KEY = os.environ.get("EMBY_API_KEY", "").strip()
 # Optional comma list of Emby user names to import; empty = every user
 EMBY_USERS = [u.strip().lower() for u in os.environ.get("EMBY_USERS", "").split(",") if u.strip()]
 EMBY_SYNC_HOURS = float(os.environ.get("EMBY_SYNC_HOURS", "6"))
+OMDB_KEY = os.environ.get("OMDB_API_KEY", "").strip()   # optional: Rotten Tomatoes scores via omdbapi.com
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -368,6 +369,46 @@ def tmdb_get(path, params=None, cache=True):
         conn.close()
 
 
+# ---------------------------------------------------------------- Rotten Tomatoes (via OMDb)
+_omdb_pause_until = 0.0     # set when OMDb rejects the key or the daily limit is hit
+
+
+def rt_score(tid):
+    """Rotten Tomatoes Tomatometer for a TMDB id, e.g. "92%", or None. OMDb is looked up by IMDb id
+    (from TMDB). Results, including "no score", are cached for a week to stay under OMDb's daily limit."""
+    global _omdb_pause_until
+    key = f"omdb:{int(tid)}"
+    conn = connect()
+    try:
+        hit = conn.execute("SELECT value, fetched_at FROM cache WHERE key=?", (key,)).fetchone()
+        if hit and time.time() - hit["fetched_at"] < CACHE_TTL:
+            return json.loads(hit["value"]).get("rt")
+        if not OMDB_KEY or time.time() < _omdb_pause_until:
+            return None
+        try:
+            imdb = tmdb_get(f"/movie/{int(tid)}").get("imdb_id")
+        except TMDBError:
+            return None
+        rt = None
+        if imdb:
+            try:
+                d = requests.get("https://www.omdbapi.com/", params={"i": imdb, "apikey": OMDB_KEY}, timeout=10).json()
+            except (requests.RequestException, ValueError):
+                return None
+            err = d.get("Error") or ""
+            if "key" in err.lower() or "limit" in err.lower():   # invalid/unactivated key or daily limit: retry in an hour
+                _omdb_pause_until = time.time() + 3600
+                app.logger.warning("OMDb: %s", err)
+                return None
+            rt = next((r["Value"] for r in d.get("Ratings") or [] if r.get("Source") == "Rotten Tomatoes"), None)
+        conn.execute("INSERT OR REPLACE INTO cache (key, value, fetched_at) VALUES (?,?,?)",
+                     (key, json.dumps({"rt": rt}), int(time.time())))
+        conn.commit()
+        return rt
+    finally:
+        conn.close()
+
+
 def genre_map():
     try:
         return {g_["id"]: g_["name"] for g_ in tmdb_get("/genre/movie/list")["genres"]}
@@ -456,13 +497,23 @@ def index():
     return resp
 
 
+@app.get("/api/rt")
+def rt_scores():
+    """?ids=603,550 -> {"603": "83%", "550": null}: Rotten Tomatoes scores for the cards on screen."""
+    ids = [int(x) for x in request.args.get("ids", "").split(",") if x.strip().isdigit()][:80]
+    if not OMDB_KEY or not ids:
+        return jsonify({})
+    with ThreadPoolExecutor(8) as ex:
+        return jsonify(dict(zip(map(str, ids), ex.map(rt_score, ids))))
+
+
 @app.get("/api/status")
 def status():
     conn = db()
     last = conn.execute("SELECT value FROM meta WHERE key='emby_last_sync'").fetchone()
     pending = conn.execute("SELECT COUNT(*) FROM emby_queue WHERE status='pending'").fetchone()[0]
     return jsonify(tmdb=bool(TMDB_KEY), claude=bool(os.environ.get("ANTHROPIC_API_KEY")),
-                   emby=bool(EMBY_URL and EMBY_KEY), emby_last_sync=json.loads(last[0]) if last else None,
+                   emby=bool(EMBY_URL and EMBY_KEY), rt=bool(OMDB_KEY), emby_last_sync=json.loads(last[0]) if last else None,
                    emby_pending=pending, people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
 
 

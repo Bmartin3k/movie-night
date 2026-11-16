@@ -654,6 +654,7 @@ function renderSuggestions() {
   const g = $("#genre-filter").value;
   const list = (state.suggestions || []).filter((m) => !g || (m.genres || []).includes(g));
   $("#suggest-grid").innerHTML = list.map((m) => suggestionCard(m)).join("");
+  fillRT($("#suggest-grid"));
   const empty = $("#suggest-empty");
   if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key to get these (see README)."; }
   else if (state.suggestions && !state.suggestions.length) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
@@ -661,7 +662,28 @@ function renderSuggestions() {
   const genres = [...new Set((state.suggestions || []).flatMap((m) => m.genres || []))].sort();
   $("#genre-filter").innerHTML = `<option value="">All genres</option>` + genres.map((x) => `<option ${x === g ? "selected" : ""}>${esc(x)}</option>`).join("");
 }
-function renderClaude() { $("#claude-grid").innerHTML = claudeResults.map((m) => suggestionCard(m)).join(""); }
+function renderClaude() { $("#claude-grid").innerHTML = claudeResults.map((m) => suggestionCard(m)).join(""); fillRT($("#claude-grid")); }
+
+// Rotten Tomatoes Tomatometer badges (OMDb), fetched after the cards are drawn so they never slow them down
+const rtCache = {};
+function rtBadge(card, v) {
+  if (!v || card.querySelector(".rt")) return;
+  const n = parseInt(v, 10);
+  card.querySelector(".poster")?.insertAdjacentHTML("beforeend",
+    `<span class="rt ${n >= 60 ? "fresh" : "rotten"}" title="Rotten Tomatoes Tomatometer">${n >= 60 ? "🍅" : "🤢"} ${esc(v)}</span>`);
+}
+async function fillRT(grid) {
+  if (!state.status?.rt || !grid) return;
+  const cards = [...grid.querySelectorAll(".card[data-tmdb]")].filter((c) => c.dataset.tmdb);
+  cards.filter((c) => c.dataset.tmdb in rtCache).forEach((c) => rtBadge(c, rtCache[c.dataset.tmdb]));
+  const need = [...new Set(cards.map((c) => c.dataset.tmdb).filter((id) => !(id in rtCache)))];
+  for (let i = 0; i < need.length; i += 40) {
+    let got;
+    try { got = await api(`/rt?ids=${need.slice(i, i + 40).join(",")}`); } catch { return; }
+    Object.assign(rtCache, got);
+    cards.forEach((c) => { if (c.isConnected && c.dataset.tmdb in got) rtBadge(c, got[c.dataset.tmdb]); });
+  }
+}
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();
@@ -737,6 +759,7 @@ async function onSuggestionClick(e) {
 async function loadWatchlist() {
   state.watchlist = await api("/watchlist");
   $("#watchlist-grid").innerHTML = state.watchlist.map((m) => suggestionCard(m, "watchlist")).join("");
+  fillRT($("#watchlist-grid"));
   $("#watchlist-empty").hidden = state.watchlist.length > 0;
   $("#count-watchlist").textContent = state.watchlist.length || "";
 }
