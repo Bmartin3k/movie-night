@@ -227,14 +227,16 @@ def test_parents_five_stars_count_half_for_kids(client, people, add_movie, fake_
     assert sam["score"] == 6.75 and alex["score"] == pytest.approx(6.75 / 2, abs=0.01)   # scores are rounded to 2 places
 
 
-def test_saved_flag_means_saved_for_everyone_selected(client, people, add_movie, fake_tmdb):
+def test_saved_picks_leave_suggestions_for_who_they_were_saved_for(client, people, add_movie, fake_tmdb):
     recs, _, _ = fake_tmdb
     j, s = people["Jane"], people["Sam"]
     add_movie(1, "Seed", {j: 10, s: 10})
     recs[1] = [rec(101, "Pick")]
     save(client, 101, "Pick", [j])
-    flag = lambda g: client.get("/api/suggestions?people=" + ",".join(map(str, g))).get_json()[0]["saved"]
-    assert flag([j]) is True and flag([s]) is False and flag([j, s]) is False
+    # saved for Jane: gone from hers and any group with her in it (it's on that watchlist), still offered to Sam
+    assert titles(client, [j]) == [] and titles(client, [j, s]) == [] and titles(client, [s]) == ["Pick"]
+    client.delete(f"/api/watchlist/101?people={j}")
+    assert titles(client, [j]) == ["Pick"]
 
 
 # ---------------------------------------------------------------- critic scores cache (OMDb)

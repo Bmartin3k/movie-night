@@ -1220,7 +1220,8 @@ def suggestions():
             rated.setdefault(r[0], []).append((names[r[1]], r[2]))
     fives = {t: sorted(n for n, _ in rs) for t, rs in rated.items() if all(v >= 9 for _, v in rs)}
     skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | (set(seen) - set(fives) if show_seen else set(seen))
-    saved = saved_map(conn)
+    # already on the group's watchlist (saved for anyone selected, same as the Watchlist tab shows): not suggested again
+    skip |= {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
 
     # the strongest seeds first, capped so a big library doesn't fan out into hundreds of calls
     ranked = sorted(seeds.items(), key=lambda kv: -abs(sum(r for _, r in kv[1]["in"]) / len(kv[1]["in"]) - 5.5))[:80]
@@ -1300,7 +1301,6 @@ def suggestions():
         item["score"] = round(item["score"] + (best - 5.5) * 1.5 * (0.5 if group_limit(conn, group) else 1), 2)
         item["loved_by"] = [{"name": n, "rating": rt} for n, rt in e["fans"]]
     for o in out:
-        o["saved"] = set(group) <= saved.get(o["tmdb_id"], set())   # saved for everyone selected
         if o["tmdb_id"] in seen:
             o["seen_by"] = sorted(seen[o["tmdb_id"]], key=lambda n: (n == "someone", n))
             o["five_by"] = sorted(fives.get(o["tmdb_id"], []))

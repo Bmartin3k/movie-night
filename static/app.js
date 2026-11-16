@@ -810,6 +810,11 @@ async function onSuggestionClick(e) {
         await api("/watchlist", { method: "POST", body: { ...m, reason, people: groupIds() } }); m.saved = true;
       }
       btn.textContent = m.saved ? "★ Saved" : "☆ Save";
+      if (m.saved && card.closest("#suggest-grid")) {      // it's on the watchlist now: off Suggestions
+        card.classList.add("done");
+        state.suggestions = (state.suggestions || []).filter((x) => x.tmdb_id !== tmdb);
+        setTimeout(renderSuggestions, 300);
+      }
       loadWatchlist();
     } else if (btn.dataset.act === "dismiss") {
       await api("/dismiss", { method: "POST", body: { tmdb_id: tmdb, title: m.title } });
