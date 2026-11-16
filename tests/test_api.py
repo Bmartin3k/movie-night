@@ -454,3 +454,66 @@ def test_settings_password_guards_grown_up_changes_only(client, people, monkeypa
     A._unlock_fails.update(n=0, until=0.0)
     assert client.put("/api/password", json={"password": ""}).status_code == 200         # the unlocked browser turns it off
     assert kid.get("/api/settings").status_code == 200
+
+
+# ---------------------------------------------------------------- media servers (Jellyfin / Plex faked)
+def queue_rows():
+    return {r["emby_id"]: dict(r) for r in A.connect().execute("SELECT * FROM emby_queue")}
+
+
+def test_jellyfin_sync_queues_played_movies(client, people, add_movie, monkeypatch):
+    def get(path, params=None):
+        if path == "/Users":
+            return [{"Id": "u1", "Name": "Jane"}, {"Id": "u2", "Name": "Kilo"}]
+        return {"Items": [
+            {"Id": "a", "Name": "Arrival", "ProductionYear": 2016, "ProviderIds": {"Tmdb": "329865"},
+             "UserData": {"LastPlayedDate": "2026-10-01T20:00:00Z", "IsFavorite": path.startswith("/Users/u1")}},
+            {"Id": "b", "Name": "Already Rated", "ProductionYear": 2020, "ProviderIds": {"Tmdb": "5"}, "UserData": {}},
+        ]}
+    monkeypatch.setattr(A, "jellyfin_get", get)
+    monkeypatch.setattr(A, "JELLYFIN_URL", "http://jf:8096")
+    monkeypatch.setattr(A, "JELLYFIN_KEY", "k")
+    add_movie(5, "Already Rated", {people["Sam"]: 8})
+    r = client.post("/api/sync").get_json()
+    assert r["jellyfin"]["played"] == 2 and r["jellyfin"]["added"] == 1 and "emby" not in r
+    q = queue_rows()["jellyfin:a"]
+    assert (q["tmdb_id"], q["source"], q["watched_by"], q["watched_on"], q["favorite"]) == \
+        (329865, "jellyfin", "Jane, Kilo", "2026-10-01", 1)
+    jane_seen = client.get("/api/movies").get_json()[0]["watches"]
+    assert {w["person_id"] for w in jane_seen} == {people["Sam"], people["Jane"]}   # Jane marked as seen
+    assert client.get("/api/status").get_json()["syncs"]["jellyfin"]["users"] == ["Jane", "Kilo"]
+
+
+def test_plex_sync_reads_history_for_every_account(client, people, monkeypatch):
+    def get(path, params=None):
+        if path == "/accounts":
+            return {"MediaContainer": {"Account": [{"id": 1, "name": "Jane"}, {"id": 7, "name": "Sam"}, {"id": 0}]}}
+        if path == "/status/sessions/history/all":
+            return {"MediaContainer": {"Metadata": [
+                {"type": "movie", "ratingKey": "10", "title": "Up", "viewedAt": 1767225600, "accountID": 1},
+                {"type": "movie", "ratingKey": "10", "title": "Up", "viewedAt": 1764547200, "accountID": 7},
+                {"type": "episode", "ratingKey": "11", "title": "Pilot", "viewedAt": 1764547200, "accountID": 1},
+                {"type": "movie", "ratingKey": "12", "title": "Gone", "year": 1999, "viewedAt": 1764547200, "accountID": 7},
+            ]}}
+        if path == "/library/metadata/10":
+            return {"MediaContainer": {"Metadata": [{"title": "Up", "year": 2009, "summary": "Balloons.",
+                    "Guid": [{"id": "imdb://tt1049413"}, {"id": "tmdb://14160"}], "Genre": [{"tag": "Animation"}]}]}}
+        raise A.EmbyError("Plex returned 404")            # deleted from the library since
+    monkeypatch.setattr(A, "plex_get", get)
+    monkeypatch.setattr(A, "PLEX_URL", "http://plex:32400")
+    monkeypatch.setattr(A, "PLEX_TOKEN", "t")
+    r = client.post("/api/sync").get_json()["plex"]
+    assert r["played"] == 2 and r["added"] == 2 and r["users"] == ["Jane", "Sam"]
+    q = queue_rows()
+    assert (q["plex:10"]["tmdb_id"], q["plex:10"]["watched_by"], q["plex:10"]["year"], q["plex:10"]["source"]) == \
+        (14160, "Jane, Sam", 2009, "plex")
+    assert q["plex:10"]["watched_on"] == "2026-01-01"                # latest viewing
+    assert (q["plex:12"]["tmdb_id"], q["plex:12"]["title"]) == (None, "Gone")
+    monkeypatch.setattr(A, "PLEX_USERS", ["sam"])                    # only some accounts
+    A.connect().execute("DELETE FROM emby_queue").connection.commit()
+    client.post("/api/sync")
+    assert queue_rows()["plex:10"]["watched_by"] == "Sam"
+
+
+def test_sync_with_nothing_set_up(client):
+    assert client.post("/api/sync").status_code == 400

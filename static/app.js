@@ -227,7 +227,7 @@ function renderPeopleDialog() {
       <div class="pe-line">
         <input class="emoji-in" data-f="emoji" value="${esc(p.emoji)}" placeholder="🙂" maxlength="4" aria-label="Emoji">
         <input class="pe-name" data-f="name" value="${esc(p.name)}" aria-label="Name">
-        <input class="aka" data-f="aliases" value="${esc(p.aliases)}" placeholder="Also known as (Emby / Netflix names)">
+        <input class="aka" data-f="aliases" value="${esc(p.aliases)}" placeholder="Also known as (Emby / Jellyfin / Plex / Netflix names)">
         <button type="button" class="danger" data-act="del" title="Remove ${esc(p.name)} and their ratings">✕</button>
       </div>
       <div class="pe-line pe-sub">
@@ -301,7 +301,7 @@ $("#unlinked").addEventListener("change", async (e) => {
 $("#unlinked").addEventListener("click", async (e) => {
   if (!e.target.closest("[data-act=new]")) return;
   const name = e.target.closest("[data-name]").dataset.name;
-  const nice = prompt(`Name for the person Emby/Netflix calls "${name}":`, name);
+  const nice = prompt(`Name for the person Emby/Jellyfin/Plex/Netflix calls "${name}":`, name);
   if (!nice) return;
   try {
     const body = { name: nice.trim() };
@@ -377,7 +377,8 @@ async function loadMovies() {
 // ---------- "To rate": one list per person
 // Every imported movie and every movie in Watched shows up for every person until *they* rate it,
 // say they didn't watch it, or skip it. Movies the imports credit to them come first.
-const srcLabel = (q) => q.kind === "movie" ? "Watched" : q.source === "netflix" ? "Netflix" : q.source === "emby" ? "Emby" : q.source;
+const MEDIA_NAMES = { emby: "Emby", jellyfin: "Jellyfin", plex: "Plex" };
+const srcLabel = (q) => q.kind === "movie" ? "Watched" : q.source === "netflix" ? "Netflix" : MEDIA_NAMES[q.source] || q.source;
 function queueCard(q) {
   const pre = q.kind === "queue" && q.favorite ? 9 : 0;
   const notNames = (q.not_watched || []).filter((id) => id !== state.me).map((id) => person(id)?.name).filter(Boolean);
@@ -425,11 +426,15 @@ function renderQueue() {
   const t = $("#notme-toggle");
   t.hidden = !declinedN;
   t.textContent = state.showNotMe ? "← Back to my list" : `Show the ${declinedN} I didn't watch`;
-  const s = state.status.emby_last_sync;
-  $("#emby-sync-info").textContent = s
-    ? `Emby last synced ${new Date(s.at * 1000).toLocaleString()} · ${s.played} played movies across ${s.users.join(", ")}`
-    : state.status.emby ? "Emby not synced yet." : "Emby isn't set up. You can still import Netflix history.";
-  $("#emby-sync").hidden = !state.status.emby;
+  const media = state.status.media || {}, syncs = state.status.syncs || {};
+  const on = Object.keys(MEDIA_NAMES).filter((k) => media[k]);
+  $("#emby-sync-info").textContent = on.length
+    ? on.map((k) => syncs[k]
+        ? `${MEDIA_NAMES[k]} last synced ${new Date(syncs[k].at * 1000).toLocaleString()} · ${syncs[k].played} played movies across ${syncs[k].users.join(", ")}`
+        : `${MEDIA_NAMES[k]} not synced yet.`).join(" · ")
+    : "No media server set up (Emby, Jellyfin or Plex in ⚙ Settings). You can still import Netflix history.";
+  $("#emby-sync").hidden = !on.length;
+  $("#emby-sync").textContent = `⟳ Sync from ${on.map((k) => MEDIA_NAMES[k]).join(" + ")}`;
 }
 async function loadQueue() {
   state.queue = meP() ? await api(`/torate?person_id=${state.me}`) : [];
@@ -488,12 +493,14 @@ $("#torate-grid").addEventListener("click", async (e) => {
 $("#emby-sync").addEventListener("click", async () => {
   const b = $("#emby-sync"); b.disabled = true; b.textContent = "Syncing…";
   try {
-    await api("/emby/sync", { method: "POST" });
+    const r = await api("/sync", { method: "POST" });
+    const errs = Object.entries(r).filter(([, v]) => v.error).map(([k, v]) => `${MEDIA_NAMES[k]}: ${v.error}`);
     state.status = await api("/status");
     await Promise.all([loadQueue(), loadMovies(), loadPeople()]);
     state.suggestionsKey = null;
+    if (errs.length) alert(errs.join("\n"));
   } catch (err) { alert(err.message); }
-  finally { b.disabled = false; b.textContent = "⟳ Sync from Emby"; }
+  finally { b.disabled = false; renderQueue(); }
 });
 $("#torate-more").addEventListener("click", () => { state.queueShown += 48; renderQueue(); });
 $("#notme-toggle").addEventListener("click", (e) => {
@@ -1098,6 +1105,8 @@ const SERVICES = {
   omdb: ["OMDb (Rotten Tomatoes + Metacritic)", "Optional: critic scores and the critics boost. Free tier 1,000/day.", "https://www.omdbapi.com/apikey.aspx"],
   radarr: ["Radarr", "Optional: Request in Radarr on watchlist cards. Key: Radarr → Settings → General.", ""],
   emby: ["Emby", "Optional: imports played movies into To rate. Key: Dashboard → Advanced → API Keys.", ""],
+  jellyfin: ["Jellyfin", "Optional: imports played movies into To rate. Key: Dashboard → API Keys → +. URL like http://192.168.1.50:8096", ""],
+  plex: ["Plex", "Optional: imports every account's watch history (movies) into To rate. Use the server owner's token. URL like http://192.168.1.50:32400", "https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/"],
 };
 let settingsList = [];
 const SRC_LABEL = { saved: "saved here", env: "from .env", "": "not set" };
@@ -1135,7 +1144,7 @@ function renderSettings() {
       </label>`).join("");
     return `<div class="set-svc" data-svc="${svc}">
       <h3>${esc(name)} <span class="spacer"></span><button type="button" class="ghost" data-test="${svc}">Test</button></h3>
-      <div class="muted small note">${esc(note)} ${link ? `<a href="${link}" target="_blank" rel="noopener">Get a key</a>` : ""}</div>
+      <div class="muted small note">${esc(note)} ${link ? `<a href="${link}" target="_blank" rel="noopener">${svc === "plex" ? "Find your token" : "Get a key"}</a>` : ""}</div>
       ${fields}<div class="set-test"></div></div>`;
   }).join("") + passwordSection();
 }

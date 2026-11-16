@@ -39,8 +39,9 @@ then get suggestions for one person or any group watching together.
 - **To rate** is per person: only what that person could have watched and hasn't rated. That's movies credited to them
   (their Netflix profile, imports under their name, Watched movies marked seen), plus movies from shared accounts
   (Emby, rentals) watched after their count-from age. Shared-account movies come first, then ones credited to them, newest first.
-  - Every movie marked played in Emby lands here, synced every 6 h and from **⟳ Sync from Emby**. "Watched by" and the date
-    come from Emby; already-rated or skipped movies aren't re-queued.
+  - Every movie marked played in Emby or Jellyfin, or in any account's Plex watch history, lands here, synced every 6 h
+    and from the **⟳ Sync** button. "Watched by" and the date come from the server; already-rated or skipped movies
+    aren't re-queued, and a movie on more than one server is merged into one entry. Set the servers up in ⚙ Settings.
   - Tap the stars, then **✓ Save** to rate it into Watched for whoever is rating on that device. A ❤ Emby favorite starts at 4.5★.
   - **Didn't watch** takes it off your list and is remembered across syncs. **Rate for others** rates it for several
     people at once. **Skip** still counts as seen, so it's never suggested.
@@ -75,7 +76,7 @@ then get suggestions for one person or any group watching together.
 
 ## Set up
 
-You need a machine with Docker (with the Compose plugin) and a free TMDB API key. Emby and Anthropic keys are optional.
+You need a machine with Docker (with the Compose plugin) and a free TMDB API key. Emby / Jellyfin / Plex, Anthropic, OMDb and Radarr are optional.
 
     git clone <repo-url> movie-night && cd movie-night
     cp .env.example .env && chmod 600 .env   # keys can go here, or in ⚙ Settings in the app
@@ -85,22 +86,22 @@ Then, in the app:
 0. Open **⚙ Settings** (top right) and paste your API keys. **Test** checks each one against the real service.
    Keys saved there take over from `.env` straight away, no restart. They're stored in `data/settings.json`
    (readable only by the app's user, mode 600, and kept out of the database and its backups) and never shown again,
-   only their last 4 characters. **Use .env** forgets a saved value. Changing the Radarr or Emby URL needs its
+   only their last 4 characters. **Use .env** forgets a saved value. Changing a Radarr / Emby / Jellyfin / Plex URL needs its
    API key typed again, so a changed URL can't be used to send your saved key to some other server.
    At the bottom of Settings you can set a **settings password**. Nobody has to log in to browse or rate, but
    Settings, age limits, birthdates and removing someone then ask for it (unlocking lasts 15 minutes from the last
    change, per browser; 5 wrong guesses pause tries for a minute). Forgot it? On the server, delete the `"_password"`
    line from `data/settings.json`.
 1. Tap **👤 Who's rating?** → **Manage people** and add everyone in the household. Add an "also known as" name for
-   anyone whose Emby user or Netflix profile has a different name, plus a birthdate / kid setting for kids if you like.
-2. Pick who's rating on this device, and start adding movies: search in **Watched**, sync Emby, or import
+   anyone whose Emby / Jellyfin / Plex user or Netflix profile has a different name, plus a birthdate / kid setting for kids if you like.
+2. Pick who's rating on this device, and start adding movies: search in **Watched**, sync your media server, or import
    Netflix / CSV history from the **To rate** tab.
 3. Once a few movies are rated, try **Suggestions**.
 
 Port 8095 already taken? Set `PORT=` in `.env`. The app has **no login**: keep it on your home network
 (or behind a reverse proxy with authentication), not open to the internet. That matters more now that anyone
 who can open it can change the API keys in Settings. Settings covers the keys, URLs, Claude model, Radarr profile/folder
-and Emby users; `PORT`, `PUID`/`PGID`, `BACKUP_KEEP` and `EMBY_SYNC_HOURS` stay in `.env`.
+and which media-server users to import; `PORT`, `PUID`/`PGID`, `BACKUP_KEEP` and `EMBY_SYNC_HOURS` stay in `.env`.
 
 After editing `.env` or the code: `docker compose up -d --build`. Data lives in `data/movies.db` (SQLite).
 

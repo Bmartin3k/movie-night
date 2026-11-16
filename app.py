@@ -47,6 +47,8 @@ RADARR_KEY = os.environ.get("RADARR_API_KEY", "").strip()
 RADARR_PROFILE = os.environ.get("RADARR_QUALITY_PROFILE", "").strip()   # name or id; default: the first one
 RADARR_ROOT = os.environ.get("RADARR_ROOT_FOLDER", "").strip()          # path; default: the first one
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+JELLYFIN_URL = JELLYFIN_KEY = PLEX_URL = PLEX_TOKEN = ""     # set by apply_settings()
+JELLYFIN_USERS, PLEX_USERS = [], []
 DISMISS_WEIGHT = 0.25 * (2 - 5.5)     # a dismissed pick pulls like a quarter of a 1★ (2/10) rating: -0.875
 
 app = Flask(__name__, static_folder="static", static_url_path="")
@@ -225,6 +227,12 @@ SETTINGS = [
     ("EMBY_URL", "URL", "emby", False),
     ("EMBY_API_KEY", "API key", "emby", True),
     ("EMBY_USERS", "Only these users (comma list; blank = all)", "emby", False),
+    ("JELLYFIN_URL", "URL", "jellyfin", False),
+    ("JELLYFIN_API_KEY", "API key", "jellyfin", True),
+    ("JELLYFIN_USERS", "Only these users (comma list; blank = all)", "jellyfin", False),
+    ("PLEX_URL", "URL", "plex", False),
+    ("PLEX_TOKEN", "Token", "plex", True),
+    ("PLEX_USERS", "Only these accounts (comma list; blank = all)", "plex", False),
 ]
 SETTING_KEYS = {k for k, *_ in SETTINGS}
 
@@ -232,7 +240,8 @@ SETTING_KEYS = {k for k, *_ in SETTINGS}
 # Saved values live in their own file next to the database, readable only by the app's user (0600), and NOT in
 # the database, so they never end up in data/backups (which may be copied to other machines).
 SETTINGS_PATH = os.path.join(os.path.dirname(DB_PATH) or ".", "settings.json")
-URL_KEY = {"RADARR_URL": "RADARR_API_KEY", "EMBY_URL": "EMBY_API_KEY"}   # changing a URL needs its key re-entered
+URL_KEY = {"RADARR_URL": "RADARR_API_KEY", "EMBY_URL": "EMBY_API_KEY", "JELLYFIN_URL": "JELLYFIN_API_KEY",
+           "PLEX_URL": "PLEX_TOKEN"}   # changing a URL needs its key re-entered
 
 
 def settings_file():
@@ -292,6 +301,7 @@ def apply_settings(conn):
     """Load the effective values into the module globals the rest of the app reads (one gunicorn worker)."""
     global TMDB_KEY, ANTHROPIC_KEY, CLAUDE_MODEL, OMDB_KEY, RADARR_URL, RADARR_KEY, RADARR_PROFILE, RADARR_ROOT
     global EMBY_URL, EMBY_KEY, EMBY_USERS, _omdb_pause_until
+    global JELLYFIN_URL, JELLYFIN_KEY, JELLYFIN_USERS, PLEX_URL, PLEX_TOKEN, PLEX_USERS
     v = {k: setting(conn, k)[0] for k in SETTING_KEYS}
     TMDB_KEY, ANTHROPIC_KEY, OMDB_KEY = v["TMDB_API_KEY"], v["ANTHROPIC_API_KEY"], v["OMDB_API_KEY"]
     CLAUDE_MODEL = v["CLAUDE_MODEL"] or "claude-opus-5-5"
@@ -299,6 +309,10 @@ def apply_settings(conn):
     RADARR_PROFILE, RADARR_ROOT = v["RADARR_QUALITY_PROFILE"], v["RADARR_ROOT_FOLDER"]
     EMBY_URL, EMBY_KEY = v["EMBY_URL"].rstrip("/"), v["EMBY_API_KEY"]
     EMBY_USERS = [u.strip().lower() for u in v["EMBY_USERS"].split(",") if u.strip()]
+    JELLYFIN_URL, JELLYFIN_KEY = v["JELLYFIN_URL"].rstrip("/"), v["JELLYFIN_API_KEY"]
+    JELLYFIN_USERS = [u.strip().lower() for u in v["JELLYFIN_USERS"].split(",") if u.strip()]
+    PLEX_URL, PLEX_TOKEN = v["PLEX_URL"].rstrip("/"), v["PLEX_TOKEN"]
+    PLEX_USERS = [u.strip().lower() for u in v["PLEX_USERS"].split(",") if u.strip()]
     _omdb_pause_until = 0.0
     _radarr_lib["at"] = 0
 
@@ -813,9 +827,12 @@ def radarr_request():
 def status():
     conn = db()
     last = conn.execute("SELECT value FROM meta WHERE key='emby_last_sync'").fetchone()
+    syncs = {src: json.loads(r[0]) for src in MEDIA_SOURCES
+             for r in [conn.execute("SELECT value FROM meta WHERE key=?", (f"{src}_last_sync",)).fetchone()] if r}
     pending = conn.execute("SELECT COUNT(*) FROM emby_queue WHERE status='pending'").fetchone()[0]
     return jsonify(tmdb=bool(TMDB_KEY), claude=bool(ANTHROPIC_KEY),
                    emby=bool(EMBY_URL and EMBY_KEY), rt=bool(OMDB_KEY), radarr=bool(RADARR_URL and RADARR_KEY), emby_last_sync=json.loads(last[0]) if last else None,
+                   media={src: media_configured(src) for src in MEDIA_SOURCES}, syncs=syncs,
                    emby_pending=pending, last_backup=last_backup(), people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
 
 
@@ -972,6 +989,16 @@ def test_settings(service):
                 return jsonify(ok=False, message="Needs both a URL and a key")
             info = emby_get("/System/Info")
             msg = f"Connected to Emby {info.get('Version', '')} ({info.get('ServerName', '')})"
+        elif service == "jellyfin":
+            if not (JELLYFIN_URL and JELLYFIN_KEY):
+                return jsonify(ok=False, message="Needs both a URL and a key")
+            info = jellyfin_get("/System/Info")
+            msg = f"Connected to Jellyfin {info.get('Version', '')} ({info.get('ServerName', '')})"
+        elif service == "plex":
+            if not (PLEX_URL and PLEX_TOKEN):
+                return jsonify(ok=False, message="Needs both a URL and a token")
+            mc = plex_get("/")["MediaContainer"]
+            msg = f"Connected to Plex {mc.get('version', '')} ({mc.get('friendlyName', '')})"
         else:
             return jsonify(error="unknown service"), 404
     except anthropic.AuthenticationError:
@@ -1013,9 +1040,10 @@ def list_people():
     seen = set()
     for r in conn.execute("SELECT watched_by FROM emby_queue WHERE status='pending'"):
         seen |= {n.strip() for n in (r[0] or "").split(",") if n.strip()}
-    last = conn.execute("SELECT value FROM meta WHERE key='emby_last_sync'").fetchone()
-    if last:
-        seen |= set(json.loads(last[0]).get("users", []))
+    for src in MEDIA_SOURCES:
+        last = conn.execute("SELECT value FROM meta WHERE key=?", (f"{src}_last_sync",)).fetchone()
+        if last:
+            seen |= set(json.loads(last[0]).get("users", []))
     idx = people_by_alias(conn)
     unlinked = sorted({n for n in seen if n.lower() not in idx}, key=str.lower)
     return jsonify(people=people, unlinked=unlinked)
@@ -2135,34 +2163,127 @@ def emby_get(path, params=None):
     return r.json()
 
 
-_sync_lock = threading.Lock()
-
-
-def emby_sync():
-    """Pull every played movie for each Emby user into the "To rate" queue.
-
-    Movies already rated (matched by TMDB id, or title+year) are skipped. A movie already in the
-    queue just gets its watchers / last-played date / favorite flag refreshed; skipped ones stay skipped."""
-    if not (EMBY_URL and EMBY_KEY):
-        raise EmbyError("EMBY_URL / EMBY_API_KEY are not set")
-    if not _sync_lock.acquire(blocking=False):
-        raise EmbyError("A sync is already running")
+def jellyfin_get(path, params=None):
     try:
-        users = [u for u in emby_get("/Users")
-                 if not EMBY_USERS or u["Name"].lower() in EMBY_USERS]
-        played = {}
-        for u in users:
-            items = emby_get(f"/Users/{u['Id']}/Items", {
-                "IncludeItemTypes": "Movie", "Recursive": "true", "IsPlayed": "true",
-                "Fields": "ProviderIds,ProductionYear,Overview,Genres,UserDataLastPlayedDate,UserDataPlayCount",
-                "EnableUserData": "true",  # Emby 4.10 omits LastPlayedDate unless asked for in Fields
-            }).get("Items", [])
-            for it in items:
-                ud = it.get("UserData") or {}
-                p = played.setdefault(it["Id"], {"item": it, "users": [], "last": "", "fav": False})
-                p["users"].append(u["Name"])
-                p["last"] = max(p["last"], (ud.get("LastPlayedDate") or "")[:10])
-                p["fav"] = p["fav"] or bool(ud.get("IsFavorite"))
+        r = requests.get(f"{JELLYFIN_URL}{path}", params=params or {}, timeout=30,
+                         headers={"Authorization": f'MediaBrowser Token="{JELLYFIN_KEY}"', "accept": "application/json"})
+    except requests.RequestException as e:
+        raise EmbyError(f"Couldn't reach Jellyfin: {e}") from e
+    if r.status_code in (401, 403):
+        raise EmbyError("Jellyfin rejected the API key")
+    if not r.ok:
+        raise EmbyError(f"Jellyfin returned {r.status_code}")
+    return r.json()
+
+
+def plex_get(path, params=None):
+    try:
+        r = requests.get(f"{PLEX_URL}{path}", params=params or {}, timeout=30,
+                         headers={"X-Plex-Token": PLEX_TOKEN, "Accept": "application/json"})
+    except requests.RequestException as e:
+        raise EmbyError(f"Couldn't reach Plex: {e}") from e
+    if r.status_code in (401, 403):
+        raise EmbyError("Plex rejected the token")
+    if not r.ok:
+        raise EmbyError(f"Plex returned {r.status_code}")
+    return r.json()
+
+
+# Media servers whose played movies land in To rate. Queue keys: Emby item ids as-is (from before the others
+# existed), "jellyfin:<id>", "plex:<ratingKey>". All count as shared accounts, like Emby.
+MEDIA_SOURCES = ("emby", "jellyfin", "plex")
+MEDIA_NAMES = {"emby": "Emby", "jellyfin": "Jellyfin", "plex": "Plex"}
+
+
+def media_configured(src):
+    return bool({"emby": EMBY_URL and EMBY_KEY, "jellyfin": JELLYFIN_URL and JELLYFIN_KEY,
+                 "plex": PLEX_URL and PLEX_TOKEN}[src])
+
+
+def _played_mediabrowser(get, only):
+    """Emby / Jellyfin (same API): every user's played movies."""
+    users = [u for u in get("/Users") if not only or u["Name"].lower() in only]
+    played = {}
+    for u in users:
+        items = get(f"/Users/{u['Id']}/Items", {
+            "IncludeItemTypes": "Movie", "Recursive": "true", "IsPlayed": "true",
+            "Fields": "ProviderIds,ProductionYear,Overview,Genres,UserDataLastPlayedDate,UserDataPlayCount",
+            "EnableUserData": "true",  # Emby 4.10 omits LastPlayedDate unless asked for in Fields
+        }).get("Items", [])
+        for it in items:
+            ud = it.get("UserData") or {}
+            ids = it.get("ProviderIds") or {}
+            tmdb = ids.get("Tmdb") or ids.get("tmdb")
+            p = played.setdefault(it["Id"], {"name": it.get("Name"), "year": it.get("ProductionYear"),
+                                              "tmdb": int(tmdb) if tmdb and str(tmdb).isdigit() else None,
+                                              "overview": it.get("Overview", ""), "genres": it.get("Genres") or [],
+                                              "users": [], "last": "", "fav": False})
+            p["users"].append(u["Name"])
+            p["last"] = max(p["last"], (ud.get("LastPlayedDate") or "")[:10])
+            p["fav"] = p["fav"] or bool(ud.get("IsFavorite"))
+    return [u["Name"] for u in users], played
+
+
+def _played_plex():
+    """Plex: the server's watch history (every account, including managed/home users), movies only."""
+    accounts = {a["id"]: a.get("name") or f"Plex user {a['id']}"
+                for a in plex_get("/accounts")["MediaContainer"].get("Account", []) if a.get("id")}
+    seen = {}
+    for start in range(0, 100_000, 500):
+        page = plex_get("/status/sessions/history/all", {"sort": "viewedAt:desc", "X-Plex-Container-Start": start,
+                                                         "X-Plex-Container-Size": 500})["MediaContainer"].get("Metadata", [])
+        for h in page:
+            name = accounts.get(h.get("accountID"), f"Plex user {h.get('accountID')}")
+            if h.get("type") != "movie" or not h.get("ratingKey") or (PLEX_USERS and name.lower() not in PLEX_USERS):
+                continue
+            day = date.fromtimestamp(h["viewedAt"]).isoformat() if h.get("viewedAt") else ""
+            p = seen.setdefault(str(h["ratingKey"]), {"name": h.get("title"), "year": h.get("year"), "tmdb": None,
+                                                      "overview": "", "genres": [], "users": [], "last": "", "fav": False})
+            if name not in p["users"]:
+                p["users"].append(name)
+            p["last"] = max(p["last"], day)
+        if len(page) < 500:
+            break
+
+    def meta(rk):        # TMDB id etc. from the library item (gone from the library: keep what history had)
+        try:
+            m = plex_get(f"/library/metadata/{rk}", {"includeGuids": 1})["MediaContainer"]["Metadata"][0]
+        except (EmbyError, KeyError, IndexError):
+            return
+        p = seen[rk]
+        tmdb = next((g["id"][7:] for g in m.get("Guid") or [] if str(g.get("id", "")).startswith("tmdb://")), None)
+        p.update(name=m.get("title") or p["name"], year=m.get("year") or p["year"], overview=m.get("summary", ""),
+                 genres=[x["tag"] for x in m.get("Genre") or [] if x.get("tag")],
+                 tmdb=int(tmdb) if tmdb and tmdb.isdigit() else None)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(meta, list(seen)))
+    names = sorted({n for p in seen.values() for n in p["users"]})
+    return names, {f"plex:{k}": v for k, v in seen.items()}
+
+
+_sync_locks = {src: threading.Lock() for src in MEDIA_SOURCES}
+
+
+def media_sync(src="emby"):
+    """Pull every played movie on a media server (Emby, Jellyfin or Plex) into the "To rate" queue.
+
+    Movies already rated (matched by TMDB id, or title+year) are skipped, but each watcher is marked as having
+    seen them. A movie already in the queue just gets its watchers / last-played date / favorite flag refreshed;
+    skipped ones stay skipped."""
+    name = MEDIA_NAMES[src]
+    if not media_configured(src):
+        raise EmbyError(f"{name} isn't set up (add it in Settings)")
+    if not _sync_locks[src].acquire(blocking=False):
+        raise EmbyError(f"A {name} sync is already running")
+    try:
+        if src == "emby":
+            users, played = _played_mediabrowser(emby_get, EMBY_USERS)
+        elif src == "jellyfin":
+            users, played = _played_mediabrowser(jellyfin_get, JELLYFIN_USERS)
+            played = {f"jellyfin:{k}": v for k, v in played.items()}
+        else:
+            users, played = _played_plex()
 
         conn = connect()
         rated_ids = {r[0] for r in conn.execute("SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL")}
@@ -2171,40 +2292,35 @@ def emby_sync():
         queued_tmdb = {r["tmdb_id"]: r for r in conn.execute(
             "SELECT emby_id, tmdb_id, watched_by, watched_on, source FROM emby_queue WHERE tmdb_id IS NOT NULL")}
 
-        def tmdb_id_of(it):
-            v = (it.get("ProviderIds") or {}).get("Tmdb") or (it.get("ProviderIds") or {}).get("tmdb")
-            return int(v) if v and str(v).isdigit() else None
-
         new = []
-        for eid, p in played.items():
-            it = p["item"]
-            tid = remapped(conn, tmdb_id_of(it))
-            if (tid and tid in rated_ids) or (it.get("Name", "").lower(), it.get("ProductionYear")) in rated_titles:
-                if tid and tid in rated_ids:     # make sure each Emby watcher shows as having seen it
+        for key, p in played.items():
+            tid = remapped(conn, p["tmdb"])
+            if (tid and tid in rated_ids) or ((p["name"] or "").lower(), p["year"]) in rated_titles:
+                if tid and tid in rated_ids:     # make sure each watcher shows as having seen it
                     mid = conn.execute("SELECT id FROM movies WHERE tmdb_id=?", (tid,)).fetchone()[0]
-                    tag_source(conn, mid, "emby")
+                    tag_source(conn, mid, src)
                     for pid in queue_watchers(conn, ", ".join(p["users"]), tid, watched_on=p["last"] or None)[0]:
                         conn.execute("INSERT OR IGNORE INTO watches (movie_id, person_id, rating, notes, updated_at) "
                                      "VALUES (?,?,NULL,'',?)", (mid, pid, int(time.time())))
                 continue
-            if eid in queued:
+            if key in queued:
                 conn.execute("UPDATE emby_queue SET watched_by=?, watched_on=?, favorite=? WHERE emby_id=?",
-                             (merge_names(queued[eid]["watched_by"], ", ".join(p["users"])), p["last"] or None,
-                              int(p["fav"]), eid))
-            elif tid and tid in queued_tmdb:      # already queued from Netflix etc.
+                             (merge_names(queued[key]["watched_by"], ", ".join(p["users"])), p["last"] or None,
+                              int(p["fav"]), key))
+            elif tid and tid in queued_tmdb:      # already queued from another server / Netflix etc.
                 o = queued_tmdb[tid]
                 conn.execute("UPDATE emby_queue SET watched_by=?, watched_on=?, favorite=MAX(favorite,?) WHERE emby_id=?",
                              (merge_names(o["watched_by"], ", ".join(p["users"])),
                               max(o["watched_on"] or "", p["last"] or "") or None, int(p["fav"]), o["emby_id"]))
             else:
-                new.append((eid, tid, p))
+                new.append((key, tid, p))
         conn.commit()
 
-        # Posters / genres come from TMDB (Emby image URLs would need the API key in the browser).
+        # Posters / genres come from TMDB (media-server image URLs would need the key in the browser).
         genres = genre_map() if TMDB_KEY else {}
 
         def details(entry):
-            eid, tid, p = entry
+            key, tid, p = entry
             d = None
             if tid and TMDB_KEY:
                 try:
@@ -2216,22 +2332,25 @@ def emby_sync():
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(details, new))
         now = int(time.time())
-        for (eid, tid, p), d in results:
-            it = p["item"]
+        for (key, tid, p), d in results:
             conn.execute(
                 "INSERT OR IGNORE INTO emby_queue (emby_id,tmdb_id,title,year,poster_path,overview,genres,"
-                "watched_by,watched_on,favorite,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?, 'pending', ?)",
-                (eid, tid, it.get("Name") or "Untitled", it.get("ProductionYear") or (d or {}).get("year"),
-                 (d or {}).get("poster_path"), (d or {}).get("overview") or it.get("Overview", ""),
-                 json.dumps((d or {}).get("genres") or it.get("Genres") or []),
-                 ", ".join(sorted(p["users"])), p["last"] or None, int(p["fav"]), now))
-        summary = {"at": now, "users": [u["Name"] for u in users], "played": len(played), "added": len(new)}
-        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('emby_last_sync', ?)", (json.dumps(summary),))
+                "watched_by,watched_on,favorite,status,created_at,source) VALUES (?,?,?,?,?,?,?,?,?,?, 'pending', ?, ?)",
+                (key, tid, p["name"] or "Untitled", p["year"] or (d or {}).get("year"),
+                 (d or {}).get("poster_path"), (d or {}).get("overview") or p["overview"],
+                 json.dumps((d or {}).get("genres") or p["genres"]),
+                 ", ".join(sorted(p["users"])), p["last"] or None, int(p["fav"]), now, src))
+        summary = {"at": now, "users": users, "played": len(played), "added": len(new)}
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"{src}_last_sync", json.dumps(summary)))
         conn.commit()
         conn.close()
         return summary
     finally:
-        _sync_lock.release()
+        _sync_locks[src].release()
+
+
+def emby_sync():
+    return media_sync("emby")
 
 
 @app.post("/api/emby/sync")
@@ -2240,6 +2359,21 @@ def emby_sync_route():
         return jsonify(emby_sync())
     except EmbyError as e:
         return jsonify(error=str(e)), 502
+
+
+@app.post("/api/sync")
+def sync_all_route():
+    """Sync every configured media server. -> {"emby": summary | {"error": ...}, ...}"""
+    out = {}
+    for src in MEDIA_SOURCES:
+        if media_configured(src):
+            try:
+                out[src] = media_sync(src)
+            except EmbyError as e:
+                out[src] = {"error": str(e)}
+    if not out:
+        return jsonify(error="No media server is set up (add Emby, Jellyfin or Plex in Settings)"), 400
+    return jsonify(out)
 
 
 @app.get("/api/torate")
@@ -2462,22 +2596,22 @@ if BACKUP_KEEP > 0:
     threading.Thread(target=_backup_background, daemon=True, name="backup").start()
 
 
-def _emby_background():
+def _media_background():
     time.sleep(60)
     while True:
-        try:
-            if not (EMBY_URL and EMBY_KEY):      # can be set later on the Settings page
-                time.sleep(600)
+        for src in MEDIA_SOURCES:
+            if not media_configured(src):      # can be set later on the Settings page
                 continue
-            s = emby_sync()
-            print(f"emby sync: {s['played']} played, {s['added']} new", flush=True)
-        except Exception as e:  # keep the loop alive whatever happens
-            print(f"emby sync failed: {e}", flush=True)
+            try:
+                r = media_sync(src)
+                print(f"{src} sync: {r['played']} played, {r['added']} new", flush=True)
+            except Exception as e:  # keep the loop alive whatever happens
+                print(f"{src} sync failed: {e}", flush=True)
         time.sleep(EMBY_SYNC_HOURS * 3600)
 
 
 if EMBY_SYNC_HOURS > 0:
-    threading.Thread(target=_emby_background, daemon=True, name="emby-sync").start()
+    threading.Thread(target=_media_background, daemon=True, name="media-sync").start()
 
 
 if __name__ == "__main__":

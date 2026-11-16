@@ -54,10 +54,10 @@
       </div>
       <button id="netflix-btn" class="ghost">⇪ Import Netflix history</button>
       <button id="csv-btn" class="ghost">⇪ Import CSV (rentals…)</button>
-      <button id="emby-sync" class="ghost">⟳ Sync from Emby</button>
+      <button id="emby-sync" class="ghost" hidden>⟳ Sync</button>
     </div>
     <p class="muted small">What <b id="torate-me">you</b> might have watched and haven't rated: your own Netflix profile and imports,
-      movies you're marked as having seen, and anything from the shared Emby account or rentals. Tap the stars (left half = ½), then <b>✓ Save</b>.
+      movies you're marked as having seen, and anything from the shared Emby / Jellyfin / Plex accounts or rentals. Tap the stars (left half = ½), then <b>✓ Save</b>.
       <b>Didn't watch</b> and <b>Skip</b> (seen it, won't rate) only take it off <i>your</i> list. <b>Rate for others</b> rates it for several people at once.
       ❤ favorites come pre-filled, so just hit ✓.</p>
     <div class="for-bar">
@@ -166,7 +166,7 @@
     <p class="muted small">API keys and connections. What you save here takes over from the <code>.env</code> file
       straight away, no restart. Saved keys are never shown again, only their last 4 characters; leave a key box
       empty to keep it. They're kept in <code>data/settings.json</code> (owner-only, not in backups).
-      Changing a Radarr or Emby URL needs its key typed again. Set a password at the bottom so only grown-ups can change these.</p>
+      Changing a server URL needs its key typed again. Set a password at the bottom so only grown-ups can change these.</p>
     <div id="settings-body"></div>
     <p id="settings-error" class="error"></p>
     <div class="actions">
@@ -195,7 +195,7 @@
 <!-- manage people -->
 <dialog id="people-dialog">
   <h2>Household</h2>
-  <p class="muted small">Everyone who rates movies. "Also known as" is a person's Emby user name or Netflix profile name,
+  <p class="muted small">Everyone who rates movies. "Also known as" is a person's Emby / Jellyfin / Plex user name or Netflix profile name,
     so imported history is credited to the right person. Set a kid's age-rating limit, and any suggestions that include them
     stay within it (US MPA ratings from TMDB; movies with no US rating are left out). With a birthdate, imported
     Emby / Netflix / CSV viewings from before "count history from age" don't count for that person.</p>
@@ -206,7 +206,7 @@
     <button class="primary" type="submit">Add</button>
   </form>
   <div id="unlinked-wrap" hidden>
-    <h3>Names from Emby / Netflix not linked to anyone</h3>
+    <h3>Names from Emby / Jellyfin / Plex / Netflix not linked to anyone</h3>
     <p class="muted small">Link each one to a person (e.g. Emby user "jsmith" is Jane), or add them as a new person.
       Movies watched by an unlinked name are kept out of everyone's suggestions, to be safe.</p>
     <div id="unlinked"></div>
