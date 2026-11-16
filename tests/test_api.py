@@ -365,7 +365,7 @@ def test_claude_picks_follow_the_4_5_star_rule(client, people, add_movie, monkey
     prompts = []
 
     class Fake:
-        def __init__(self):
+        def __init__(self, **kw):
             self.beta = self
             self.messages = self
 
@@ -382,7 +382,7 @@ def test_claude_picks_follow_the_4_5_star_rule(client, people, add_movie, monkey
             return {"results": [{"id": ids[t], "title": t, "release_date": "2020-01-01", "genre_ids": []}]}
         raise A.TMDBError(path)
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr(A, "ANTHROPIC_KEY", "x")
     monkeypatch.setattr(A.anthropic, "Anthropic", Fake)
     monkeypatch.setattr(A, "TMDB_KEY", "test")
     monkeypatch.setattr(A, "tmdb_get", tmdb_get)
@@ -392,3 +392,23 @@ def test_claude_picks_follow_the_4_5_star_rule(client, people, add_movie, monkey
     assert "Loved by Jane (2020) — new to Sam" in prompts[0]
     got = {m["title"] for m in client.post("/api/claude-suggestions", json={"people": [j]}).get_json()}
     assert got == {"New one"}                       # Jane alone: nothing she's seen
+
+
+# ---------------------------------------------------------------- settings page
+def test_settings_override_env_and_never_return_secrets(client, monkeypatch):
+    monkeypatch.setenv("OMDB_API_KEY", "env-omdb-key-1234")
+    monkeypatch.setenv("RADARR_URL", "http://env:7878")
+    get = lambda: {f["key"]: f for f in client.get("/api/settings").get_json()}
+    assert get()["OMDB_API_KEY"]["source"] == "env" and get()["OMDB_API_KEY"]["hint"] == "…1234"
+    assert "value" not in get()["OMDB_API_KEY"] and get()["RADARR_URL"]["value"] == "http://env:7878"
+    r = client.put("/api/settings", json={"OMDB_API_KEY": "saved-omdb-key-9999", "RADARR_URL": "http://saved:7878/"})
+    assert r.status_code == 200 and "saved-omdb-key-9999" not in r.get_data(as_text=True)
+    assert get()["OMDB_API_KEY"] == {**get()["OMDB_API_KEY"], "source": "saved", "hint": "…9999"}
+    assert A.OMDB_KEY == "saved-omdb-key-9999" and A.RADARR_URL == "http://saved:7878"   # live, no restart
+    client.put("/api/settings", json={"OMDB_API_KEY": None})                            # forget: back to .env
+    assert get()["OMDB_API_KEY"]["source"] == "env" and A.OMDB_KEY == "env-omdb-key-1234"
+    assert client.put("/api/settings", json={"PUID": "0"}).status_code == 400            # only known settings
+    client.put("/api/settings", json={"RADARR_URL": None})
+    monkeypatch.delenv("OMDB_API_KEY")
+    monkeypatch.delenv("RADARR_URL")
+    A.apply_settings(A.connect())                   # don't leak these into other tests

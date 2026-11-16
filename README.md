@@ -78,10 +78,13 @@ then get suggestions for one person or any group watching together.
 You need a machine with Docker (with the Compose plugin) and a free TMDB API key. Emby and Anthropic keys are optional.
 
     git clone <repo-url> movie-night && cd movie-night
-    cp .env.example .env && chmod 600 .env   # then add your keys (see below)
+    cp .env.example .env && chmod 600 .env   # keys can go here, or in ⚙ Settings in the app
     docker compose up -d --build              # open http://<this-machine>:8095
 
 Then, in the app:
+0. Open **⚙ Settings** (top right) and paste your API keys. **Test** checks each one against the real service.
+   Keys saved there take over from `.env` straight away, no restart. They're stored in `data/movies.db` (and its
+   backups) and never shown again, only their last 4 characters. **Use .env** forgets a saved value.
 1. Tap **👤 Who's rating?** → **Manage people** and add everyone in the household. Add an "also known as" name for
    anyone whose Emby user or Netflix profile has a different name, plus a birthdate / kid setting for kids if you like.
 2. Pick who's rating on this device, and start adding movies: search in **Watched**, sync Emby, or import
@@ -89,7 +92,9 @@ Then, in the app:
 3. Once a few movies are rated, try **Suggestions**.
 
 Port 8095 already taken? Set `PORT=` in `.env`. The app has **no login**: keep it on your home network
-(or behind a reverse proxy with authentication), not open to the internet.
+(or behind a reverse proxy with authentication), not open to the internet. That matters more now that anyone
+who can open it can change the API keys in Settings. Settings covers the keys, URLs, Claude model, Radarr profile/folder
+and Emby users; `PORT`, `PUID`/`PGID`, `BACKUP_KEEP` and `EMBY_SYNC_HOURS` stay in `.env`.
 
 After editing `.env` or the code: `docker compose up -d --build`. Data lives in `data/movies.db` (SQLite).
 

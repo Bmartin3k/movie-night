@@ -45,6 +45,7 @@ RADARR_URL = os.environ.get("RADARR_URL", "").strip().rstrip("/")
 RADARR_KEY = os.environ.get("RADARR_API_KEY", "").strip()
 RADARR_PROFILE = os.environ.get("RADARR_QUALITY_PROFILE", "").strip()   # name or id; default: the first one
 RADARR_ROOT = os.environ.get("RADARR_ROOT_FOLDER", "").strip()          # path; default: the first one
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 DISMISS_WEIGHT = 0.25 * (2 - 5.5)     # a dismissed pick pulls like a quarter of a 1★ (2/10) rating: -0.875
 
 app = Flask(__name__, static_folder="static", static_url_path="")
@@ -114,6 +115,10 @@ CREATE TABLE IF NOT EXISTS tmdb_remap (     -- "Wrong movie?" fixes: imports mat
     from_id     INTEGER PRIMARY KEY,
     to_id       INTEGER NOT NULL,
     created_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (          -- values saved on the Settings page; they override .env
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -207,6 +212,52 @@ def _migrate(conn):
 with connect() as _c:
     _c.executescript(SCHEMA)
     _migrate(_c)
+
+
+# ---------------------------------------------------------------- settings (Settings page; override .env)
+# (env name, label, service, secret)
+SETTINGS = [
+    ("TMDB_API_KEY", "API key or Read Access Token", "tmdb", True),
+    ("ANTHROPIC_API_KEY", "API key", "claude", True),
+    ("CLAUDE_MODEL", "Model", "claude", False),
+    ("OMDB_API_KEY", "API key", "omdb", True),
+    ("RADARR_URL", "URL", "radarr", False),
+    ("RADARR_API_KEY", "API key", "radarr", True),
+    ("RADARR_QUALITY_PROFILE", "Quality profile (name or id; blank = first)", "radarr", False),
+    ("RADARR_ROOT_FOLDER", "Root folder (blank = first)", "radarr", False),
+    ("EMBY_URL", "URL", "emby", False),
+    ("EMBY_API_KEY", "API key", "emby", True),
+    ("EMBY_USERS", "Only these users (comma list; blank = all)", "emby", False),
+]
+SETTING_KEYS = {k for k, *_ in SETTINGS}
+
+
+def saved_settings(conn):
+    return {r[0]: r[1] for r in conn.execute("SELECT key, value FROM settings") if r[0] in SETTING_KEYS}
+
+
+def setting(conn, key):
+    """-> (value, source): saved on the Settings page beats .env."""
+    saved = saved_settings(conn)
+    if key in saved:
+        return saved[key], "saved"
+    v = os.environ.get(key, "").strip()
+    return v, ("env" if v else "")
+
+
+def apply_settings(conn):
+    """Load the effective values into the module globals the rest of the app reads (one gunicorn worker)."""
+    global TMDB_KEY, ANTHROPIC_KEY, CLAUDE_MODEL, OMDB_KEY, RADARR_URL, RADARR_KEY, RADARR_PROFILE, RADARR_ROOT
+    global EMBY_URL, EMBY_KEY, EMBY_USERS, _omdb_pause_until
+    v = {k: setting(conn, k)[0] for k in SETTING_KEYS}
+    TMDB_KEY, ANTHROPIC_KEY, OMDB_KEY = v["TMDB_API_KEY"], v["ANTHROPIC_API_KEY"], v["OMDB_API_KEY"]
+    CLAUDE_MODEL = v["CLAUDE_MODEL"] or "claude-opus-5-5"
+    RADARR_URL, RADARR_KEY = v["RADARR_URL"].rstrip("/"), v["RADARR_API_KEY"]
+    RADARR_PROFILE, RADARR_ROOT = v["RADARR_QUALITY_PROFILE"], v["RADARR_ROOT_FOLDER"]
+    EMBY_URL, EMBY_KEY = v["EMBY_URL"].rstrip("/"), v["EMBY_API_KEY"]
+    EMBY_USERS = [u.strip().lower() for u in v["EMBY_USERS"].split(",") if u.strip()]
+    _omdb_pause_until = 0.0
+    _radarr_lib["at"] = 0
 
 
 def merge_names(*lists):
@@ -720,9 +771,85 @@ def status():
     conn = db()
     last = conn.execute("SELECT value FROM meta WHERE key='emby_last_sync'").fetchone()
     pending = conn.execute("SELECT COUNT(*) FROM emby_queue WHERE status='pending'").fetchone()[0]
-    return jsonify(tmdb=bool(TMDB_KEY), claude=bool(os.environ.get("ANTHROPIC_API_KEY")),
+    return jsonify(tmdb=bool(TMDB_KEY), claude=bool(ANTHROPIC_KEY),
                    emby=bool(EMBY_URL and EMBY_KEY), rt=bool(OMDB_KEY), radarr=bool(RADARR_URL and RADARR_KEY), emby_last_sync=json.loads(last[0]) if last else None,
                    emby_pending=pending, last_backup=last_backup(), people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Each setting with where its value comes from. Secrets are never sent back, only their last 4 characters."""
+    conn = db()
+    out = []
+    for key, label, service, secret in SETTINGS:
+        v, src = setting(conn, key)
+        item = {"key": key, "label": label, "service": service, "secret": secret, "source": src,
+                "env": bool(os.environ.get(key, "").strip())}
+        if secret:
+            item["hint"] = ("…" + v[-4:]) if len(v) > 8 else ("set" if v else "")
+        else:
+            item["value"] = v
+        out.append(item)
+    return jsonify(out)
+
+
+@app.put("/api/settings")
+def put_settings():
+    """{"KEY": "value"} saves it (overrides .env); {"KEY": null} forgets the saved value (back to .env)."""
+    b = request.get_json(force=True) or {}
+    conn = db()
+    for k, v in b.items():
+        if k not in SETTING_KEYS:
+            return jsonify(error=f"unknown setting {k}"), 400
+        if v is None:
+            conn.execute("DELETE FROM settings WHERE key=?", (k,))
+        else:
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (k, str(v).strip()[:500]))
+    conn.commit()
+    apply_settings(conn)
+    return get_settings()
+
+
+@app.post("/api/settings/test/<service>")
+def test_settings(service):
+    """Check the current values against the real service. -> {"ok": bool, "message": str}"""
+    try:
+        if service == "tmdb":
+            if not TMDB_KEY:
+                return jsonify(ok=False, message="No key")
+            tmdb_get("/configuration", cache=False)
+            msg = "TMDB accepted the key"
+        elif service == "claude":
+            if not ANTHROPIC_KEY:
+                return jsonify(ok=False, message="No key")
+            anthropic.Anthropic(api_key=ANTHROPIC_KEY).models.retrieve(CLAUDE_MODEL)
+            msg = f"Anthropic accepted the key ({CLAUDE_MODEL} available)"
+        elif service == "omdb":
+            if not OMDB_KEY:
+                return jsonify(ok=False, message="No key")
+            d = requests.get("https://www.omdbapi.com/", params={"i": "tt0111161", "apikey": OMDB_KEY}, timeout=10).json()
+            if d.get("Response") != "True":
+                return jsonify(ok=False, message="OMDb: " + (d.get("Error") or "no answer"))
+            msg = "OMDb accepted the key"
+        elif service == "radarr":
+            if not (RADARR_URL and RADARR_KEY):
+                return jsonify(ok=False, message="Needs both a URL and a key")
+            v = radarr("GET", "/system/status").get("version")
+            msg = f"Connected to Radarr {v}"
+        elif service == "emby":
+            if not (EMBY_URL and EMBY_KEY):
+                return jsonify(ok=False, message="Needs both a URL and a key")
+            info = emby_get("/System/Info")
+            msg = f"Connected to Emby {info.get('Version', '')} ({info.get('ServerName', '')})"
+        else:
+            return jsonify(error="unknown service"), 404
+    except anthropic.AuthenticationError:
+        return jsonify(ok=False, message="Anthropic rejected the key")
+    except anthropic.NotFoundError:
+        return jsonify(ok=False, message=f"The key works, but model {CLAUDE_MODEL} wasn't found")
+    except (anthropic.APIError, TMDBError, RadarrError, EmbyError, requests.RequestException, ValueError) as e:
+        return jsonify(ok=False, message=str(e)[:300])
+    return jsonify(ok=True, message=msg)
 
 
 @app.get("/api/search")
@@ -1396,8 +1523,8 @@ addressed to the group, naming the people and the specific movies on their lists
 
 @app.post("/api/claude-suggestions")
 def claude_suggestions():
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return jsonify(error="ANTHROPIC_API_KEY is not set"), 503
+    if not ANTHROPIC_KEY:
+        return jsonify(error="No Anthropic API key (add one in ⚙ Settings)"), 503
     body = request.get_json(silent=True) or {}
     wish = (body.get("request") or "").strip()[:500]
     conn = db()
@@ -1477,7 +1604,7 @@ def claude_suggestions():
     prompt += "\n\n" + (f"What they're in the mood for: {wish}\n\n" if wish else "")
     prompt += "Suggest 8 movies."
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
     try:
         resp = client.beta.messages.create(
             model=CLAUDE_MODEL,
@@ -2187,6 +2314,9 @@ def _backup_background():
         time.sleep(3600)
 
 
+with connect() as _c:
+    apply_settings(_c)
+
 if BACKUP_KEEP > 0:
     threading.Thread(target=_backup_background, daemon=True, name="backup").start()
 
@@ -2195,6 +2325,9 @@ def _emby_background():
     time.sleep(60)
     while True:
         try:
+            if not (EMBY_URL and EMBY_KEY):      # can be set later on the Settings page
+                time.sleep(600)
+                continue
             s = emby_sync()
             print(f"emby sync: {s['played']} played, {s['added']} new", flush=True)
         except Exception as e:  # keep the loop alive whatever happens
@@ -2202,7 +2335,7 @@ def _emby_background():
         time.sleep(EMBY_SYNC_HOURS * 3600)
 
 
-if EMBY_URL and EMBY_KEY and EMBY_SYNC_HOURS > 0:
+if EMBY_SYNC_HOURS > 0:
     threading.Thread(target=_emby_background, daemon=True, name="emby-sync").start()
 
 

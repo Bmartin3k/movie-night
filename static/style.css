@@ -256,3 +256,15 @@ button.link { background: none; border: 0; padding: .2rem 0; color: inherit; opa
 .card .btns button.radarr[data-state="downloaded"] { color: #00ce7a; }
 .card .seen-by { color: var(--accent); font-size: .8rem; font-weight: 600; }
 .card.seen-pick .poster { opacity: .55; }
+#settings-dialog { width: min(600px, calc(100vw - 32px)); }
+.set-svc { border-top: 1px solid var(--border); padding-top: .7rem; margin-top: .9rem; }
+.set-svc h3 { font-size: .95rem; margin: 0; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.set-svc h3 .spacer { flex: 1; }
+.set-svc .note { font-weight: normal; }
+.set-field { display: flex; gap: .4rem; align-items: center; }
+.set-field input { flex: 1; min-width: 0; }
+.set-field .src { font-size: .72rem; color: var(--muted); white-space: nowrap; }
+.set-test { font-size: .8rem; margin-top: .3rem; }
+.set-test.ok { color: #6fcf7f; }
+.set-test.bad { color: #ff7b7b; }
+.small-btn { font-size: .75rem; padding: .2rem .5rem; }

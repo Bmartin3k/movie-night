@@ -17,6 +17,7 @@
     <button class="tab" data-tab="watchlist">Watchlist <span id="count-watchlist"></span></button>
   </nav>
   <button id="me-btn" class="ghost me" title="Who's rating on this device">👤 Who's rating?</button>
+  <button id="settings-btn" class="ghost" title="Settings: API keys and connections" aria-label="Settings">⚙</button>
   <button id="add-btn" class="primary">+ Add movie</button>
 </header>
 
@@ -156,6 +157,23 @@
     <span class="spacer"></span>
     <button type="button" id="me-close" class="ghost">Close</button>
   </div>
+</dialog>
+
+<!-- settings: API keys -->
+<dialog id="settings-dialog">
+  <form id="settings-form" method="dialog">
+    <h2>Settings</h2>
+    <p class="muted small">API keys and connections. What you save here takes over from the <code>.env</code> file
+      straight away, no restart. Saved keys are never shown again, only their last 4 characters; leave a key box
+      empty to keep it. Anyone who can open this app can change these.</p>
+    <div id="settings-body"></div>
+    <p id="settings-error" class="error"></p>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" id="settings-close" class="ghost">Close</button>
+      <button type="submit" class="primary" id="settings-save">Save</button>
+    </div>
+  </form>
 </dialog>
 
 <!-- manage people -->

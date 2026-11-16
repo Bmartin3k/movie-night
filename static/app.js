@@ -670,7 +670,7 @@ function renderSuggestions() {
   if (unknown) loadRT(all.map((m) => m.tmdb_id)).then(renderSuggestions);
   else fillRT($("#suggest-grid"));
   const empty = $("#suggest-empty");
-  if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key to get these (see README)."; }
+  if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key in ⚙ Settings to get these."; }
   else if (state.suggestions && !state.suggestions.length) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
   else if (!unknown && all.length && !list.length && fresh) { empty.hidden = false; empty.textContent = "None of these are Fresh on Rotten Tomatoes. Turn off 🍅 Fresh only to see them all."; }
   else empty.hidden = true;
@@ -1052,10 +1052,11 @@ function renderAll() {
 // ---------- boot
 (async function init() {
   state.status = await api("/status");
-  const missing = [!state.status.tmdb && "TMDB_API_KEY (search, posters, suggestions)", !state.status.claude && "ANTHROPIC_API_KEY (Ask Claude)"].filter(Boolean);
+  const missing = [!state.status.tmdb && "a TMDB key (search, posters, suggestions)", !state.status.claude && "an Anthropic key (Ask Claude)"].filter(Boolean);
   if (missing.length) {
     const b = $("#banner"); b.hidden = false;
-    b.innerHTML = `Not configured yet: ${missing.map(esc).join(" and ")}. Add them to <code>.env</code> and restart. See the README.`;
+    b.innerHTML = `Not configured yet: ${missing.map(esc).join(" and ")}. <a href="#" id="banner-settings">Add them in ⚙ Settings</a>.`;
+    $("#banner-settings").addEventListener("click", (e) => { e.preventDefault(); openSettings(); });
   }
   if (!state.status.claude) $("#claude-form button").disabled = true;
   await loadPeople();
@@ -1065,3 +1066,78 @@ function renderAll() {
   if (!state.people.length) openPeople();
   else if (!meP()) openMe();
 })();
+
+// ---------- settings: API keys (saved in the database, override .env)
+const SERVICES = {
+  tmdb: ["TMDB", "Needed for search, posters and suggestions.", "https://www.themoviedb.org/settings/api"],
+  claude: ["Anthropic (Ask Claude)", "Only used by the Ask Claude button.", "https://console.anthropic.com/settings/keys"],
+  omdb: ["OMDb (Rotten Tomatoes + Metacritic)", "Optional: critic scores and the critics boost. Free tier 1,000/day.", "https://www.omdbapi.com/apikey.aspx"],
+  radarr: ["Radarr", "Optional: Request in Radarr on watchlist cards. Key: Radarr → Settings → General.", ""],
+  emby: ["Emby", "Optional: imports played movies into To rate. Key: Dashboard → Advanced → API Keys.", ""],
+};
+let settingsList = [];
+const SRC_LABEL = { saved: "saved here", env: "from .env", "": "not set" };
+async function openSettings() {
+  $("#settings-error").textContent = "";
+  $("#settings-body").innerHTML = `<div class="spinner">Loading…</div>`;
+  $("#settings-dialog").showModal();
+  try { settingsList = await api("/settings"); } catch (err) { $("#settings-error").textContent = err.message; return; }
+  renderSettings();
+}
+function renderSettings() {
+  $("#settings-body").innerHTML = Object.entries(SERVICES).map(([svc, [name, note, link]]) => {
+    const fields = settingsList.filter((f) => f.service === svc).map((f) => `
+      <label>${esc(f.label)}
+        <span class="set-field">
+          <input data-key="${f.key}" ${f.secret ? `type="password" autocomplete="new-password" placeholder="${f.hint ? `${esc(f.hint)} (leave empty to keep)` : "not set"}"`
+            : `type="text" value="${esc(f.value || "")}" placeholder="${f.key === "CLAUDE_MODEL" ? "claude-opus-5-5" : ""}"`}>
+          <span class="src">${SRC_LABEL[f.source]}</span>
+          ${f.source === "saved" ? `<button type="button" class="ghost small-btn" data-forget="${f.key}" title="${f.env ? "Use the .env value again" : "Clear it"}">${f.env ? "Use .env" : "Clear"}</button>` : ""}
+        </span>
+      </label>`).join("");
+    return `<div class="set-svc" data-svc="${svc}">
+      <h3>${esc(name)} <span class="spacer"></span><button type="button" class="ghost" data-test="${svc}">Test</button></h3>
+      <div class="muted small note">${esc(note)} ${link ? `<a href="${link}" target="_blank" rel="noopener">Get a key</a>` : ""}</div>
+      ${fields}<div class="set-test"></div></div>`;
+  }).join("");
+}
+function settingsChanges() {
+  const body = {};
+  $$("#settings-body input[data-key]").forEach((i) => {
+    const f = settingsList.find((x) => x.key === i.dataset.key);
+    const v = i.value.trim();
+    if (f.secret ? v !== "" : v !== (f.value || "")) body[f.key] = v;
+  });
+  return body;
+}
+async function saveSettings(body) {
+  if (!Object.keys(body).length) return;
+  settingsList = await api("/settings", { method: "PUT", body });
+  state.status = await api("/status");
+  state.suggestionsKey = null;
+}
+$("#settings-btn").addEventListener("click", openSettings);
+$("#settings-close").addEventListener("click", () => $("#settings-dialog").close());
+$("#settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("#settings-error").textContent = "";
+  try { await saveSettings(settingsChanges()); $("#settings-dialog").close(); location.reload(); }
+  catch (err) { $("#settings-error").textContent = err.message; }
+});
+$("#settings-body").addEventListener("click", async (e) => {
+  const forget = e.target.closest("[data-forget]"), test = e.target.closest("[data-test]");
+  try {
+    if (forget) { await saveSettings({ ...settingsChanges(), [forget.dataset.forget]: null }); renderSettings(); }
+    if (test) {
+      const svc = test.dataset.test;
+      const pending = settingsChanges();        // test what's typed: save it first
+      await saveSettings(pending);
+      if (Object.keys(pending).length) renderSettings();
+      const box = $(`.set-svc[data-svc="${svc}"] .set-test`);
+      box.className = "set-test"; box.textContent = "Testing…";
+      const r = await api(`/settings/test/${svc}`, { method: "POST" });
+      box.className = "set-test " + (r.ok ? "ok" : "bad");
+      box.textContent = (r.ok ? "✓ " : "✗ ") + r.message;
+    }
+  } catch (err) { $("#settings-error").textContent = err.message; }
+});
