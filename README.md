@@ -20,13 +20,15 @@ then get suggestions for one person or any group watching together.
   - *Ask Claude*: sends the whole rated list (with notes) plus an optional mood ("something light for Friday")
     to Claude, which returns 8 picks with a reason for each. For a group it looks for common ground. Uses `claude-opus-5-5` (override with `CLAUDE_MODEL`).
     Each click costs a few cents.
-- **To rate** is per person: every imported movie and every Watched movie that person hasn't rated, with the ones the imports
-  credit to them first (filter: "Imports say I watched"). Rating / Didn't watch / Skip only take it off that person's list.
-- **To rate** (Emby): every movie marked played in Emby lands here. Tap stars to rate it into Watched, ✓ to accept
-  a ❤ favorite's pre-filled 4.5★, or Skip. Stars count for whoever is rating on that device. **Not me** = it played on your account but you didn't
-  watch it (remembered across syncs); **Who watched?** rates it for the people who actually did. The other people
-  Emby/Netflix says watched it get "Needs my rating" in Watched. Skip (still counts as seen, so it's never suggested). "Watched by" and the date
-  come from Emby. Syncs every 6 h and from the ⟳ button; already-rated or skipped movies aren't re-queued.
+- **To rate** is per person: only what that person could have watched and hasn't rated. That's movies credited to them
+  (their Netflix profile, imports under their name, Watched movies marked seen), plus movies from shared accounts
+  (Emby, rentals) watched after their count-from age. Shared-account movies come first, then ones credited to them, newest first.
+  - Every movie marked played in Emby lands here, synced every 6 h and from **⟳ Sync from Emby**. "Watched by" and the date
+    come from Emby; already-rated or skipped movies aren't re-queued.
+  - Tap the stars, then **✓ Save** to rate it into Watched for whoever is rating on that device. A ❤ Emby favorite starts at 4.5★.
+  - **Didn't watch** takes it off your list and is remembered across syncs. **Rate for others** rates it for several
+    people at once. **Skip** still counts as seen, so it's never suggested.
+  - Tap the summary to expand it. **Wrong movie?** fixes a bad match (see below).
 - **Netflix import** (To rate tab → ⇪ Import Netflix history): on netflix.com, Account → Profiles → a profile →
   Viewing activity → *Download all* gives `NetflixViewingHistory.csv`. Upload it per profile and say whose it is.
   TV episodes are skipped; movies are matched to TMDB on exact title (released before the watch date, most-voted
