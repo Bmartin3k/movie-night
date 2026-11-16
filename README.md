@@ -3,6 +3,8 @@
 Log the movies the household has watched. Each person rates separately (1–5 stars, half stars allowed),
 then get suggestions for one person or any group watching together.
 
+![Movie Night: the Watched tab, with each person's ratings, the family average and a summary on every card](docs/screenshot.png)
+
 - **People** (👤 button → Manage people): add each household member. "Also known as" holds their Emby user /
   Netflix profile name (e.g. Jane = `jsmith`) so imported history is credited to them. With a **birthdate**, imported viewings from before
   "count history from age" (default 5) don't count for that person: hidden from their To rate, and not "seen" for suggestions. Each device remembers
