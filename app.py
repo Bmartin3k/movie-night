@@ -1487,12 +1487,9 @@ def claude_suggestions():
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         items = list(pool.map(resolve, picks))
-    saved_ids = saved_map(conn)
-    out = [i for i in items
-           if not (i["tmdb_id"] and i["tmdb_id"] in skip)
+    out = [i for i in items      # also drop anything already on the group's watchlist, in case Claude ignored that
+           if not (i["tmdb_id"] and (i["tmdb_id"] in skip or i["tmdb_id"] in for_them))
            and (i["title"].lower(), i["year"]) not in watched_titles]
-    for i in out:
-        i["saved"] = bool(i["tmdb_id"]) and set(group) <= saved_ids.get(i["tmdb_id"], set())
     if limit and TMDB_KEY:   # double-check Claude against the real ratings
         out = apply_cert_limit(out, limit, keep=len(out))
     return jsonify(out)
