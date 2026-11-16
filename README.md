@@ -34,6 +34,9 @@ then get suggestions for one person or any group watching together.
   - **Didn't watch** takes it off your list and is remembered across syncs. **Rate for others** rates it for several
     people at once. **Skip** still counts as seen, so it's never suggested.
   - Tap the summary to expand it. **Wrong movie?** fixes a bad match (see below).
+
+  ![To rate: movies from a rental history import, each with stars to rate, Didn't watch, Rate for others and Skip](docs/torate.png)
+
 - **Netflix import** (To rate tab → ⇪ Import Netflix history): on netflix.com, Account → Profiles → a profile →
   Viewing activity → *Download all* gives `NetflixViewingHistory.csv`. Upload it per profile and say whose it is.
   TV episodes are skipped; movies are matched to TMDB on exact title (released before the watch date, most-voted
