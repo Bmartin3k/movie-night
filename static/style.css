@@ -108,7 +108,13 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .stars .off { color: #474b55; }
 .stars.big { font-size: 2rem; cursor: pointer; user-select: none; display: inline-flex; touch-action: none; }
 .stars.big span { position: relative; display: inline-block; width: 1.1em; text-align: center; }
-.star-half { background: linear-gradient(90deg, var(--accent) 50%, #474b55 50%); -webkit-background-clip: text; background-clip: text; color: transparent !important; }
+/* Half star: a grey star with a gold one on top, cut at half its width. (Not background-clip: text,
+   which Safari often fails to paint, leaving half stars blank.) */
+.star-half { position: relative; display: inline-block; color: #474b55 !important; }
+.star-half::before {
+  content: "★"; position: absolute; inset: 0; text-align: inherit; color: var(--accent);
+  -webkit-clip-path: inset(0 50% 0 0); clip-path: inset(0 50% 0 0); pointer-events: none;
+}
 
 .claude-box { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; margin-top: .5rem; }
 .claude-box form { display: flex; gap: .5rem; margin: .6rem 0 .2rem; }
