@@ -23,7 +23,9 @@ then get suggestions for one person or any group watching together.
     to Claude, which returns 8 picks with a reason for each. For a group it looks for common ground. Uses `claude-opus-5-5` (override with `CLAUDE_MODEL`).
     Each click costs a few cents.
   - With an OMDb key, suggestion and watchlist cards also show the **Rotten Tomatoes** Tomatometer
-    (🍅 fresh at 60%+, 🤢 rotten). Some movies have no score on OMDb and just show no badge.
+    (🍅 fresh at 60%+, 🤢 rotten). Some movies have no score on OMDb and just show no badge. **🍅 Fresh only**
+    (next to the genre filter) keeps only the Fresh ones in *Because you liked…*; movies with no score are hidden
+    too. Each device remembers the setting.
 
   ![Suggestions for the whole family: kid-safe because Alex is included, with the reason for each pick](docs/suggestions.png)
 

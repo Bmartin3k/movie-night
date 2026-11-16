@@ -652,12 +652,20 @@ $("#for-chips").addEventListener("click", (e) => {
 });
 function renderSuggestions() {
   const g = $("#genre-filter").value;
-  const list = (state.suggestions || []).filter((m) => !g || (m.genres || []).includes(g));
-  $("#suggest-grid").innerHTML = list.map((m) => suggestionCard(m)).join("");
-  fillRT($("#suggest-grid"));
+  const fb = $("#fresh-only");
+  fb.hidden = !state.status.rt;
+  const fresh = state.status.rt && state.freshOnly;
+  fb.setAttribute("aria-pressed", String(!!fresh));
+  const all = state.suggestions || [];
+  const unknown = fresh && !rtFailed && all.some((m) => m.tmdb_id && !(m.tmdb_id in rtCache));
+  const list = all.filter((m) => (!g || (m.genres || []).includes(g)) && (!fresh || isFresh(m)));
+  $("#suggest-grid").innerHTML = unknown ? `<div class="spinner">Checking Rotten Tomatoes scores…</div>` : list.map((m) => suggestionCard(m)).join("");
+  if (unknown) loadRT(all.map((m) => m.tmdb_id)).then(renderSuggestions);
+  else fillRT($("#suggest-grid"));
   const empty = $("#suggest-empty");
   if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key to get these (see README)."; }
   else if (state.suggestions && !state.suggestions.length) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
+  else if (!unknown && all.length && !list.length && fresh) { empty.hidden = false; empty.textContent = "None of these are Fresh on Rotten Tomatoes. Turn off 🍅 Fresh only to see them all."; }
   else empty.hidden = true;
   const genres = [...new Set((state.suggestions || []).flatMap((m) => m.genres || []))].sort();
   $("#genre-filter").innerHTML = `<option value="">All genres</option>` + genres.map((x) => `<option ${x === g ? "selected" : ""}>${esc(x)}</option>`).join("");
@@ -672,18 +680,22 @@ function rtBadge(card, v) {
   card.querySelector(".poster")?.insertAdjacentHTML("beforeend",
     `<span class="rt ${n >= 60 ? "fresh" : "rotten"}" title="Rotten Tomatoes Tomatometer">${n >= 60 ? "🍅" : "🤢"} ${esc(v)}</span>`);
 }
-async function fillRT(grid) {
-  if (!state.status?.rt || !grid) return;
-  const cards = [...grid.querySelectorAll(".card[data-tmdb]")].filter((c) => c.dataset.tmdb);
-  cards.filter((c) => c.dataset.tmdb in rtCache).forEach((c) => rtBadge(c, rtCache[c.dataset.tmdb]));
-  const need = [...new Set(cards.map((c) => c.dataset.tmdb).filter((id) => !(id in rtCache)))];
-  for (let i = 0; i < need.length; i += 40) {
-    let got;
-    try { got = await api(`/rt?ids=${need.slice(i, i + 40).join(",")}`); } catch { return; }
-    Object.assign(rtCache, got);
-    cards.forEach((c) => { if (c.isConnected && c.dataset.tmdb in got) rtBadge(c, got[c.dataset.tmdb]); });
+let rtFailed = false;
+async function loadRT(ids, onBatch) {      // fetch scores we don't have yet, 40 at a time
+  const need = [...new Set(ids.map(String).filter((id) => id && id !== "null" && !(id in rtCache)))];
+  for (let i = 0; i < need.length && !rtFailed; i += 40) {
+    try { Object.assign(rtCache, await api(`/rt?ids=${need.slice(i, i + 40).join(",")}`)); }
+    catch { rtFailed = true; }
+    onBatch?.();
   }
 }
+const paintRT = (grid) => grid.querySelectorAll(".card[data-tmdb]").forEach((c) => c.dataset.tmdb in rtCache && rtBadge(c, rtCache[c.dataset.tmdb]));
+async function fillRT(grid) {
+  if (!state.status?.rt || !grid) return;
+  paintRT(grid);
+  await loadRT([...grid.querySelectorAll(".card[data-tmdb]")].map((c) => c.dataset.tmdb), () => paintRT(grid));
+}
+const isFresh = (m) => parseInt(rtCache[m.tmdb_id], 10) >= 60;
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();
@@ -695,6 +707,12 @@ async function loadSuggestions(force) {
   renderSuggestions();
 }
 $("#genre-filter").addEventListener("change", renderSuggestions);
+state.freshOnly = lsGet("freshOnly") === "1";
+$("#fresh-only").addEventListener("click", () => {
+  state.freshOnly = !state.freshOnly;
+  lsSet("freshOnly", state.freshOnly ? "1" : "");
+  renderSuggestions();
+});
 $("#refresh-suggest").addEventListener("click", () => loadSuggestions(true));
 $("#clear-dismissed").addEventListener("click", async (e) => {
   e.preventDefault();

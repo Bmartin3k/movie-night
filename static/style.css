@@ -86,6 +86,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   position: absolute; bottom: .4rem; left: .4rem; background: rgba(0,0,0,.75); color: #fff;
   border-radius: 6px; padding: .1rem .4rem; font-weight: 700; font-size: .8rem;
 }
+#fresh-only[aria-pressed="true"] { background: var(--accent); color: #111; border-color: var(--accent); }
 .card .rt.rotten { color: #b8d98a; }
 .card .body { padding: .55rem .65rem .7rem; display: flex; flex-direction: column; gap: .25rem; flex: 1; }
 .card .title { font-weight: 600; line-height: 1.25; }
