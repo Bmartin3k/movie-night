@@ -317,6 +317,11 @@ $("#people-rows").addEventListener("click", async (e) => {
       ? `New 4-digit PIN for ${p.name}, or 0000 to remove it. Picking ${p.name} in Who's rating? asks for it.`
       : `Pick a 4-digit PIN for ${p.name} (not 0000). Picking ${p.name} in Who's rating? will ask for it once per device.`);
     if (pin === null) return;
+    if (pin !== "0000") {                     // type it twice, so a slip doesn't lock them out
+      const again = await askPin(`🔑 ${p.name}'s PIN`, "Type the same PIN again.");
+      if (again === null) return;
+      if (again !== pin) { $("#people-error").textContent = "The two PINs didn't match, so nothing changed. Try again."; return; }
+    }
     try {
       await api(`/people/${p.id}/pin`, { method: "PUT", body: { pin: pin === "0000" ? "" : pin } });
       $("#people-error").textContent = "";
