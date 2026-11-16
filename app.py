@@ -34,6 +34,11 @@ EMBY_KEY = os.environ.get("EMBY_API_KEY", "").strip()
 EMBY_USERS = [u.strip().lower() for u in os.environ.get("EMBY_USERS", "").split(",") if u.strip()]
 EMBY_SYNC_HOURS = float(os.environ.get("EMBY_SYNC_HOURS", "6"))
 OMDB_KEY = os.environ.get("OMDB_API_KEY", "").strip()
+# Optional Radarr: "Request in Radarr" on watchlist cards
+RADARR_URL = os.environ.get("RADARR_URL", "").strip().rstrip("/")
+RADARR_KEY = os.environ.get("RADARR_API_KEY", "").strip()
+RADARR_PROFILE = os.environ.get("RADARR_QUALITY_PROFILE", "").strip()   # name or id; default: the first one
+RADARR_ROOT = os.environ.get("RADARR_ROOT_FOLDER", "").strip()          # path; default: the first one
 DISMISS_WEIGHT = 0.25 * (2 - 5.5)     # a dismissed pick pulls like a quarter of a 1★ (2/10) rating: -0.875   # optional: Rotten Tomatoes scores via omdbapi.com
 
 app = Flask(__name__, static_folder="static", static_url_path="")
@@ -370,6 +375,36 @@ def tmdb_get(path, params=None, cache=True):
         conn.close()
 
 
+# ---------------------------------------------------------------- Radarr
+class RadarrError(Exception):
+    pass
+
+
+def radarr(method, path, **kw):
+    if not (RADARR_URL and RADARR_KEY):
+        raise RadarrError("Radarr isn't set up (RADARR_URL / RADARR_API_KEY)")
+    try:
+        r = requests.request(method, f"{RADARR_URL}/api/v3{path}", headers={"X-Api-Key": RADARR_KEY}, timeout=20, **kw)
+    except requests.RequestException as e:
+        raise RadarrError(f"Can't reach Radarr: {e}") from e
+    if r.status_code == 401:
+        raise RadarrError("Radarr rejected the API key")
+    if r.status_code >= 400:
+        try:
+            msg = "; ".join(x.get("errorMessage", "") for x in r.json()) if isinstance(r.json(), list) else r.text
+        except ValueError:
+            msg = r.text
+        raise RadarrError(f"Radarr said: {msg[:200]}")
+    return r.json() if r.content else None
+
+
+def radarr_state(m):
+    """Radarr movie -> "downloaded" | "wanted" (monitored, no file yet) | "unmonitored"."""
+    if m.get("hasFile"):
+        return "downloaded"
+    return "wanted" if m.get("monitored") else "unmonitored"
+
+
 # ---------------------------------------------------------------- Rotten Tomatoes (via OMDb)
 _omdb_pause_until = 0.0     # set when OMDb rejects the key or the daily limit is hit
 
@@ -528,13 +563,58 @@ def rt_scores():
         return jsonify(dict(zip(map(str, ids), ex.map(critic_scores, ids))))
 
 
+@app.get("/api/radarr/status")
+def radarr_status():
+    """?ids=603,550 -> {"603": "downloaded" | "wanted" | "unmonitored" | null (not in Radarr)}."""
+    ids = [int(x) for x in request.args.get("ids", "").split(",") if x.strip().isdigit()][:100]
+    try:
+        have = {m["tmdbId"]: radarr_state(m) for m in radarr("GET", "/movie") if m.get("tmdbId") in ids} if ids else {}
+    except RadarrError as e:
+        return jsonify(error=str(e)), 502
+    return jsonify({str(i): have.get(i) for i in ids})
+
+
+@app.post("/api/radarr/request")
+def radarr_request():
+    """{"tmdb_id": 603}: add the movie to Radarr (monitored) and start a search. If Radarr already has it
+    but isn't monitoring it, monitor it and search."""
+    try:
+        tid = int((request.get_json(force=True) or {}).get("tmdb_id"))
+    except (TypeError, ValueError):
+        return jsonify(error="tmdb_id required"), 400
+    try:
+        existing = radarr("GET", "/movie", params={"tmdbId": tid})
+        if existing:
+            m = existing[0]
+            if not m.get("monitored") and not m.get("hasFile"):
+                m["monitored"] = True
+                radarr("PUT", f"/movie/{m['id']}", json=m)
+                radarr("POST", "/command", json={"name": "MoviesSearch", "movieIds": [m["id"]]})
+                m["monitored"] = True
+            return jsonify(state=radarr_state(m), added=False)
+        profiles = radarr("GET", "/qualityprofile")
+        roots = radarr("GET", "/rootfolder")
+        if not profiles or not roots:
+            return jsonify(error="Radarr has no quality profile or root folder set up"), 502
+        prof = next((p for p in profiles if RADARR_PROFILE and (str(p["id"]) == RADARR_PROFILE
+                                                               or p["name"].lower() == RADARR_PROFILE.lower())), profiles[0])
+        root = next((r["path"] for r in roots if RADARR_ROOT and r["path"].rstrip("/") == RADARR_ROOT.rstrip("/")), roots[0]["path"])
+        movie = radarr("GET", "/movie/lookup/tmdb", params={"tmdbId": tid})
+        movie.update(qualityProfileId=prof["id"], rootFolderPath=root, monitored=True,
+                     minimumAvailability="released", addOptions={"searchForMovie": True})
+        radarr("POST", "/movie", json=movie)
+    except RadarrError as e:
+        return jsonify(error=str(e)), 502
+    return jsonify(state="wanted", added=True, profile=prof["name"], root=root)
+
+
 @app.get("/api/status")
 def status():
     conn = db()
     last = conn.execute("SELECT value FROM meta WHERE key='emby_last_sync'").fetchone()
     pending = conn.execute("SELECT COUNT(*) FROM emby_queue WHERE status='pending'").fetchone()[0]
     return jsonify(tmdb=bool(TMDB_KEY), claude=bool(os.environ.get("ANTHROPIC_API_KEY")),
-                   emby=bool(EMBY_URL and EMBY_KEY), rt=bool(OMDB_KEY), emby_last_sync=json.loads(last[0]) if last else None,
+                   emby=bool(EMBY_URL and EMBY_KEY), rt=bool(OMDB_KEY), radarr=bool(RADARR_URL and RADARR_KEY), emby_last_sync=json.loads(last[0]) if last else None,
                    emby_pending=pending, people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
 
 

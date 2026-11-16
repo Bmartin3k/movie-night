@@ -64,7 +64,9 @@ then get suggestions for one person or any group watching together.
 - **Wrong movie?** (on To rate cards, and in a Watched movie's dialog): search and pick the right one, e.g.
   RoboCop 1987 instead of 2014. Ratings and watchers carry over (merging if the right one is already rated),
   and the fix is remembered so later Emby syncs / Netflix / CSV imports use it. Switching back undoes it.
-- **Watchlist**: suggestions saved with ☆ Save. Marking one "Watched it" moves it to Watched.
+- **Watchlist**: suggestions saved with ☆ Save. Marking one "Watched it" moves it to Watched. With Radarr set up,
+  each card shows whether Radarr has it (✓ Downloaded / ⏳ searching) or a **⬇ Request in Radarr** button that adds it
+  (monitored, with a search) using your first quality profile and root folder, or the ones set in `.env`.
 
 ## Set up
 
@@ -92,6 +94,8 @@ Keys:
 - `EMBY_URL` / `EMBY_API_KEY`: Emby Dashboard → Advanced → API Keys. Optional `EMBY_USERS=Ben,Jess` to limit
   which Emby users are imported, `EMBY_SYNC_HOURS=0` for button-only.
 - `ANTHROPIC_API_KEY`: https://console.anthropic.com/settings/keys. Only needed for Ask Claude.
+- `RADARR_URL` / `RADARR_API_KEY` (optional): Radarr → Settings → General → API Key. Optional
+  `RADARR_QUALITY_PROFILE` (name or id) and `RADARR_ROOT_FOLDER` pick where requests go.
 - `OMDB_API_KEY`: free at https://www.omdbapi.com/apikey.aspx (activate it from the email). Only needed for
   Rotten Tomatoes / Metacritic scores and the critics boost; they're cached for a week, so the free 1,000 lookups a day is plenty (Watched and To rate only look up the cards on screen, a page at a time).
 

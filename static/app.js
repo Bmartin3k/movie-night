@@ -139,7 +139,8 @@ function suggestionCard(m, kind) {
   }
   const score = m.vote_average ? `★ ${Number(m.vote_average).toFixed(1)}` : "";
   const btns = kind === "watchlist"
-    ? `<button class="ok" data-act="watched">Watched it</button><button data-act="unsave">Remove</button>`
+    ? `<button class="ok" data-act="watched">Watched it</button><button data-act="unsave">Remove</button>
+       ${state.status?.radarr && m.tmdb_id ? `<button class="radarr" data-act="radarr" disabled>Radarr…</button>` : ""}`
     : `<button class="ok" data-act="watched" title="Already watched it? Add it to Watched with ratings">Already watched</button>
        ${m.tmdb_id ? `<button data-act="save">${m.saved ? "★ Saved" : "☆ Save"}</button><button data-act="dismiss" title="Not interested">✕</button>` : ""}`;
   return `<article class="card" data-tmdb="${m.tmdb_id ?? ""}">
@@ -802,6 +803,10 @@ async function onSuggestionClick(e) {
       state.suggestions = (state.suggestions || []).filter((x) => x.tmdb_id !== tmdb);
       const i = claudeResults.indexOf(m); if (i >= 0) claudeResults.splice(i, 1);
       renderSuggestions(); renderClaude();
+    } else if (btn.dataset.act === "radarr") {
+      btn.disabled = true; btn.textContent = "Requesting…";
+      try { const r = await api("/radarr/request", { method: "POST", body: { tmdb_id: tmdb } }); setRadarr(btn, r.state); }
+      catch (err) { btn.disabled = false; btn.textContent = "⬇ Request in Radarr"; alert(err.message); }
     } else if (btn.dataset.act === "unsave") {
       await api(`/watchlist/${tmdb}`, { method: "DELETE" });
       loadWatchlist();
@@ -811,10 +816,28 @@ async function onSuggestionClick(e) {
 ["#suggest-grid", "#claude-grid", "#watchlist-grid"].forEach((s) => $(s).addEventListener("click", onSuggestionClick));
 
 // ---------- watchlist tab
+// Radarr button on watchlist cards: shows whether Radarr has it, or lets you request it
+const RADARR_LABEL = { downloaded: "✓ Downloaded", wanted: "⏳ In Radarr, searching", unmonitored: "⬇ Request in Radarr" };
+function setRadarr(btn, st) {
+  btn.dataset.state = st || "none";
+  btn.textContent = st ? RADARR_LABEL[st] : "⬇ Request in Radarr";
+  btn.disabled = st === "downloaded" || st === "wanted";
+  btn.title = st === "wanted" ? "Radarr is monitoring it and will grab it when it finds a release" : st === "downloaded" ? "Radarr has the file" : "Add it to Radarr and start a search";
+}
+async function fillRadarr() {
+  const btns = [...$("#watchlist-grid").querySelectorAll("[data-act=radarr]")];
+  if (!btns.length) return;
+  const ids = btns.map((b) => b.closest(".card").dataset.tmdb);
+  try {
+    const st = await api(`/radarr/status?ids=${ids.join(",")}`);
+    btns.forEach((b, i) => setRadarr(b, st[ids[i]]));
+  } catch (err) { btns.forEach((b) => { b.textContent = "Radarr unavailable"; b.title = err.message; }); }
+}
 async function loadWatchlist() {
   state.watchlist = await api("/watchlist");
   $("#watchlist-grid").innerHTML = state.watchlist.map((m) => suggestionCard(m, "watchlist")).join("");
   fillRT($("#watchlist-grid"));
+  fillRadarr();
   $("#watchlist-empty").hidden = state.watchlist.length > 0;
   $("#count-watchlist").textContent = state.watchlist.length || "";
 }

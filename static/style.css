@@ -246,3 +246,5 @@ button.link { background: none; border: 0; padding: .2rem 0; color: inherit; opa
   padding: .25rem .45rem; border-radius: 6px; white-space: nowrap; pointer-events: none; z-index: 5;
 }
 .prow .stars.big.hovering span:not(.off) { color: var(--accent); }
+.card .btns button.radarr { flex-basis: 100%; }
+.card .btns button.radarr[data-state="downloaded"] { color: #00ce7a; }
