@@ -719,11 +719,43 @@ $("#fresh-only").addEventListener("click", () => {
   renderSuggestions();
 });
 $("#refresh-suggest").addEventListener("click", () => loadSuggestions(true));
-$("#clear-dismissed").addEventListener("click", async (e) => {
-  e.preventDefault();
-  await api("/dismiss", { method: "DELETE" });
-  loadSuggestions(true);
+// ---------- dismissed picks: bring back one at a time, or all
+let dismissedChanged = false;
+async function openDismissed() {
+  dismissedChanged = false;
+  const ul = $("#dismissed-list");
+  ul.innerHTML = `<li class="muted">Loading…</li>`;
+  $("#dismissed-dialog").showModal();
+  try {
+    const rows = await api("/dismissed");
+    ul.innerHTML = rows.map((m) => `<li data-tmdb="${m.tmdb_id}">
+      ${m.poster_path ? `<img src="${IMG}w92${esc(m.poster_path)}" alt="">` : `<span class="ph"></span>`}
+      <div class="grow"><div>${esc(m.title || "?")} <span class="muted">${m.year || ""}</span></div>
+        <div class="muted small">Dismissed ${fmtDate(new Date(m.created_at * 1000).toISOString().slice(0, 10))}</div></div>
+      <button type="button" class="ghost" data-act="undismiss">Bring back</button></li>`).join("")
+      || `<li class="muted">Nothing dismissed.</li>`;
+    $("#clear-dismissed").hidden = !rows.length;
+  } catch (err) { ul.innerHTML = `<li class="error">${esc(err.message)}</li>`; }
+}
+$("#open-dismissed").addEventListener("click", (e) => { e.preventDefault(); openDismissed(); });
+$("#dismissed-list").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-act=undismiss]");
+  if (!btn) return;
+  const li = btn.closest("li");
+  btn.disabled = true;
+  try { await api(`/dismiss/${li.dataset.tmdb}`, { method: "DELETE" }); }
+  catch (err) { btn.disabled = false; alert(err.message); return; }
+  li.remove(); dismissedChanged = true;
+  if (!$("#dismissed-list li")) { $("#dismissed-list").innerHTML = `<li class="muted">Nothing dismissed.</li>`; $("#clear-dismissed").hidden = true; }
 });
+$("#clear-dismissed").addEventListener("click", async () => {
+  if (!confirm("Bring back every dismissed pick?")) return;
+  await api("/dismiss", { method: "DELETE" });
+  dismissedChanged = true;
+  $("#dismissed-list").innerHTML = `<li class="muted">Nothing dismissed.</li>`; $("#clear-dismissed").hidden = true;
+});
+$("#dismissed-close").addEventListener("click", () => $("#dismissed-dialog").close());
+$("#dismissed-dialog").addEventListener("close", () => { if (dismissedChanged) { state.suggestionsKey = null; loadSuggestions(true); } });
 $("#claude-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const btn = $("#claude-form button");

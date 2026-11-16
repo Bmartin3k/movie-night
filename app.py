@@ -895,6 +895,31 @@ def dismiss():
     return "", 204
 
 
+@app.get("/api/dismissed")
+def list_dismissed():
+    """Dismissed picks, newest first, with poster/year from TMDB (cached)."""
+    rows = [dict(r) for r in db().execute("SELECT tmdb_id, title, created_at FROM dismissed ORDER BY created_at DESC")]
+
+    def add_details(r):
+        try:
+            d = tmdb_details(r["tmdb_id"])
+            r.update(year=d["year"], poster_path=d["poster_path"], title=r["title"] or d["title"])
+        except (TMDBError, KeyError, TypeError):
+            r.update(year=None, poster_path=None)
+        return r
+
+    with ThreadPoolExecutor(8) as ex:
+        return jsonify(list(ex.map(add_details, rows)))
+
+
+@app.delete("/api/dismiss/<int:tmdb_id>")
+def undismiss(tmdb_id):
+    conn = db()
+    conn.execute("DELETE FROM dismissed WHERE tmdb_id=?", (tmdb_id,))
+    conn.commit()
+    return "", 204
+
+
 @app.delete("/api/dismiss")
 def clear_dismissed():
     conn = db()

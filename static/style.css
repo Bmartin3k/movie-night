@@ -216,7 +216,9 @@ dialog label input, dialog label textarea { margin-top: .25rem; color: var(--tex
 #csv-sample th { color: var(--muted); font-weight: 600; }
 #csv-dialog { width: min(640px, calc(100vw - 32px)); }
 
-#rematch-dialog { width: min(560px, calc(100vw - 32px)); }
+#rematch-dialog, #dismissed-dialog { width: min(560px, calc(100vw - 32px)); }
+.dismissed-list li { cursor: default; }
+.dismissed-list li .grow { flex: 1; min-width: 0; }
 .results { list-style: none; margin: .5rem 0 0; padding: 0; max-height: 50vh; overflow-y: auto; }
 .results li { display: flex; gap: .6rem; align-items: center; padding: .4rem; border-radius: 8px; cursor: pointer; }
 .results li:hover { background: var(--panel-2); }

@@ -56,7 +56,7 @@ then get suggestions for one person or any group watching together.
 - **✕ (Not interested)** on a suggestion hides it for the whole household, and counts as a mild dislike: a quarter
   of a 1★ rating's pull on what TMDB links to it. One ✕ barely changes anything, but a pattern of them
   (several animated Batman films, say) sinks similar picks. Ask Claude is told to avoid them and movies like them.
-  "Bring back dismissed picks" (bottom of Suggestions) undoes all of it.
+  **Dismissed picks** (link at the bottom of Suggestions) lists them, to bring back one at a time or all at once.
 - **Already watched** on any suggestion adds it to Watched with that movie filled in; it then stops being suggested.
 - **CSV import** (To rate → ⇪ Import CSV): any list of movies, e.g. rental/purchase history. Upload, check the
   guessed Title / Year / Date columns, pick whose list it is and a label (shown on the cards). Format tags like

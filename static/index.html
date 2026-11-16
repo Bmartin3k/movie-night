@@ -94,7 +94,7 @@
     <p id="suggest-empty" class="empty" hidden></p>
     <p class="muted small">Ranked from TMDB recommendations of every movie the selected people rated, using their average:
       4+★ pulls a movie's recommendations up, 2.5★ or less pushes them down. Movies anyone selected has seen are never suggested.
-      <a href="#" id="clear-dismissed">Bring back dismissed picks</a></p>
+      <a href="#" id="open-dismissed">Dismissed picks</a></p>
   </section>
 
   <section id="tab-watchlist" class="panel" hidden>
@@ -210,6 +210,18 @@
   <div class="actions">
     <span class="spacer"></span>
     <button type="button" id="rematch-close" class="ghost">Cancel</button>
+  </div>
+</dialog>
+
+<dialog id="dismissed-dialog">
+  <h2>Dismissed picks</h2>
+  <p class="muted small">Movies marked ✕ Not interested. They're hidden from everyone's suggestions and gently push
+    similar movies down. Bring one back to undo both.</p>
+  <ul id="dismissed-list" class="results dismissed-list"></ul>
+  <div class="actions">
+    <button type="button" id="clear-dismissed" class="ghost">Bring all back</button>
+    <span class="spacer"></span>
+    <button type="button" id="dismissed-close" class="ghost">Close</button>
   </div>
 </dialog>
 
