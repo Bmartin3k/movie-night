@@ -87,14 +87,14 @@
       <button id="fresh-only" class="ghost" type="button" aria-pressed="false" hidden
               title="Only movies rated 60%+ on Rotten Tomatoes (movies with no score are hidden too)">🍅 Fresh only</button>
       <button id="show-watched" class="ghost" type="button" aria-pressed="false"
-              title="Also show picks someone selected has already seen (marked Seen by…)">👁 Show watched</button>
+              title="Also show picks someone selected has already seen and rated 5 stars">👁 Show watched</button>
       <select id="genre-filter"><option value="">All genres</option></select>
       <button id="refresh-suggest" class="ghost" title="Recompute">↻</button>
     </div>
     <div id="suggest-grid" class="grid"></div>
     <p id="suggest-empty" class="empty" hidden></p>
     <p class="muted small">Ranked from TMDB recommendations of every movie the selected people rated, using their average:
-      4+★ pulls a movie's recommendations up, 2.5★ or less pushes them down. Movies anyone selected has seen are hidden unless 👁 Show watched is on.
+      4+★ pulls a movie's recommendations up, 2.5★ or less pushes them down. Movies anyone selected has seen are hidden unless 👁 Show watched is on (then only their 5★ favorites).
       <a href="#" id="open-dismissed">Dismissed picks</a></p>
   </section>
 

@@ -133,7 +133,7 @@ function suggestionCard(m, kind) {
   if (kind === "watchlist" && m.saved_for_names?.length)
     why = `<div class="loved">Saved for ${m.saved_for_names.length === state.people.length && state.people.length > 1 ? "everyone" : m.saved_for_names.map(esc).join(", ")}</div>` + why;
   else {
-    if (m.seen_by) why += `<div class="seen-by">✓ Seen by ${m.seen_by.map(esc).join(", ")}</div>`;
+    if (m.seen_by) why += `<div class="seen-by">✓ Seen by ${m.seen_by.map(esc).join(", ")}${m.five_by?.length ? ` · ★★★★★ from ${m.five_by.map(esc).join(", ")}` : ""}</div>`;
     if (m.loved_by) why += `<div class="loved">${m.loved_by.map((l) => `${esc(l.name)} rated it ${fmtR(l.rating)}`).join(", ")}</div>`;
     if (m.because && m.because.length) {
       const multi = groupIds().length > 1;

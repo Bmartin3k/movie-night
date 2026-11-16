@@ -1190,7 +1190,8 @@ def suggestions():
     popularity/quality term breaks ties. Movies someone *outside* the group loved that nobody in the
     group has seen are boosted too ("Ben loved this").
 
-    ?watched=1 also returns picks someone in the group has already seen, tagged "seen_by" (names), mixed in
+    ?watched=1 also returns picks someone in the group has already seen AND rated 5★ (10/10), tagged
+    "seen_by" / "five_by" (names), mixed in
     where they rank; the unseen picks are (practically) the same as without it.
     """
     if not TMDB_KEY:
@@ -1210,7 +1211,13 @@ def suggestions():
         return jsonify([])
     seen = seen_by(conn, group)
     show_seen = request.args.get("watched") == "1"
-    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | (set() if show_seen else set(seen))
+    # with ?watched=1, only seen movies someone in the group rated 5★ (10/10) come back
+    fives = {}
+    for r in conn.execute("SELECT m.tmdb_id, w.person_id FROM movies m JOIN watches w ON w.movie_id=m.id "
+                          "WHERE m.tmdb_id IS NOT NULL AND w.rating = 10"):
+        if r[1] in group:
+            fives.setdefault(r[0], []).append(names[r[1]])
+    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | (set(seen) - set(fives) if show_seen else set(seen))
     saved = saved_map(conn)
 
     # the strongest seeds first, capped so a big library doesn't fan out into hundreds of calls
@@ -1294,6 +1301,7 @@ def suggestions():
         o["saved"] = set(group) <= saved.get(o["tmdb_id"], set())   # saved for everyone selected
         if o["tmdb_id"] in seen:
             o["seen_by"] = sorted(seen[o["tmdb_id"]], key=lambda n: (n == "someone", n))
+            o["five_by"] = sorted(fives.get(o["tmdb_id"], []))
     out.sort(key=lambda x: x["score"], reverse=True)
     # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
     # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
