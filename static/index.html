@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Movie Night</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>🎬 Movie Night</h1>
+  <nav>
+    <button class="tab active" data-tab="watched">Watched <span id="count-watched"></span></button>
+    <button class="tab" data-tab="torate">To rate <span id="count-torate"></span></button>
+    <button class="tab" data-tab="suggest">Suggestions</button>
+    <button class="tab" data-tab="watchlist">Watchlist <span id="count-watchlist"></span></button>
+  </nav>
+  <button id="me-btn" class="ghost me" title="Who's rating on this device">👤 Who's rating?</button>
+  <button id="add-btn" class="primary">+ Add movie</button>
+</header>
+
+<div id="banner" hidden></div>
+
+<main>
+  <section id="tab-watched" class="panel">
+    <div class="toolbar">
+      <input id="filter" type="search" placeholder="Filter by title, genre, notes…">
+      <select id="view">
+        <option value="all">Everything</option>
+        <option value="mine">Rated by me</option>
+        <option value="needs">Needs my rating</option>
+        <option value="unseen">I haven't seen</option>
+      </select>
+      <select id="sort">
+        <option value="date">Recently watched</option>
+        <option value="mine">My rating</option>
+        <option value="avg">Family average</option>
+        <option value="title">Title A–Z</option>
+        <option value="year">Release year</option>
+      </select>
+    </div>
+    <div id="watched-grid" class="grid"></div>
+    <button id="watched-more" class="ghost more" hidden></button>
+    <p id="watched-empty" class="empty" hidden></p>
+  </section>
+
+  <section id="tab-torate" class="panel" hidden>
+    <div class="toolbar">
+      <div class="grow">
+        <h2>Watched elsewhere, not rated yet</h2>
+        <p class="muted small" id="emby-sync-info"></p>
+      </div>
+      <button id="netflix-btn" class="ghost">⇪ Import Netflix history</button>
+      <button id="csv-btn" class="ghost">⇪ Import CSV (rentals…)</button>
+      <button id="emby-sync" class="ghost">⟳ Sync from Emby</button>
+    </div>
+    <p class="muted small">What <b id="torate-me">you</b> might have watched and haven't rated: your own Netflix profile and imports,
+      movies you're marked as having seen, and anything from the shared Emby account or rentals. Tap the stars (left half = ½), then <b>✓ Save</b>.
+      <b>Didn't watch</b> and <b>Skip</b> (seen it, won't rate) only take it off <i>your</i> list. <b>Rate for others</b> rates it for several people at once.
+      ❤ favorites come pre-filled, so just hit ✓.</p>
+    <div class="for-bar">
+      <div class="chips" hidden><button class="chip on" id="scope-all">Everything to rate</button><button class="chip" id="scope-mine">Imports say I watched</button></div>
+      <a href="#" id="notme-toggle" class="small" hidden></a>
+    </div>
+    <div id="torate-grid" class="grid"></div>
+    <button id="torate-more" class="ghost more" hidden></button>
+    <p id="torate-empty" class="empty" hidden>All caught up 🎉</p>
+  </section>
+
+  <section id="tab-suggest" class="panel" hidden>
+    <div class="for-bar">
+      <span class="muted">Suggest for</span>
+      <div id="for-chips" class="chips"></div>
+    </div>
+    <p id="kid-note" class="kid-note" hidden></p>
+    <div class="claude-box">
+      <h2>Ask Claude</h2>
+      <p class="muted">Claude reads <span id="for-label">everyone</span>'s ratings and notes and explains each pick.</p>
+      <form id="claude-form">
+        <input id="claude-wish" placeholder="Optional: “something light for a Friday”, “a 90s thriller”, “good for the kids”…">
+        <button class="primary" type="submit">Suggest</button>
+      </form>
+      <div id="claude-grid" class="grid"></div>
+    </div>
+    <div class="toolbar">
+      <h2>Because you liked…</h2>
+      <select id="genre-filter"><option value="">All genres</option></select>
+      <button id="refresh-suggest" class="ghost" title="Recompute">↻</button>
+    </div>
+    <div id="suggest-grid" class="grid"></div>
+    <p id="suggest-empty" class="empty" hidden></p>
+    <p class="muted small">Ranked from TMDB recommendations of every movie the selected people rated, using their average:
+      4+★ pulls a movie's recommendations up, 2.5★ or less pushes them down. Movies anyone selected has seen are never suggested.
+      <a href="#" id="clear-dismissed">Bring back dismissed picks</a></p>
+  </section>
+
+  <section id="tab-watchlist" class="panel" hidden>
+    <div id="watchlist-grid" class="grid"></div>
+    <p id="watchlist-empty" class="empty" hidden>Save suggestions here with <b>☆ Save</b>.</p>
+  </section>
+</main>
+
+<!-- add / edit a movie -->
+<dialog id="movie-dialog">
+  <form id="movie-form" method="dialog">
+    <h2 id="dialog-title">Add a movie</h2>
+    <div id="search-wrap">
+      <input id="search" autocomplete="off" placeholder="Search for a movie…">
+      <ul id="search-results"></ul>
+    </div>
+    <p id="wrong-wrap" class="small" hidden><a href="#" id="wrong-movie">Wrong movie? Change it</a></p>
+    <div id="picked" hidden>
+      <img id="picked-poster" alt="">
+      <div>
+        <div id="picked-title"></div>
+        <a href="#" id="repick" class="small">change</a>
+      </div>
+    </div>
+    <div id="manual" hidden>
+      <label>Title <input id="m-title"></label>
+      <label>Year <input id="m-year" inputmode="numeric" maxlength="4"></label>
+    </div>
+    <label>Ratings <span class="muted">(left half of a star = ½ · everyone starts as "Not watched")</span></label>
+    <div id="person-rows"></div>
+    <div class="row">
+      <label>When <span class="muted">(optional)</span>
+        <span class="date-wrap"><input id="m-date" type="date"><button type="button" id="m-date-clear" class="link">Don't remember</button></span></label>
+    </div>
+    <label><span id="notes-label">Your notes</span> <span class="muted">(optional)</span> <textarea id="m-notes" rows="2" placeholder="Loved the soundtrack, too long…"></textarea></label>
+    <p id="form-error" class="error"></p>
+    <div class="actions">
+      <button type="button" id="delete-btn" class="danger" hidden>Delete</button>
+      <span class="spacer"></span>
+      <button type="button" id="cancel-btn" class="ghost">Cancel</button>
+      <button type="submit" class="primary" id="save-btn">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- who's rating on this device -->
+<dialog id="me-dialog">
+  <h2>Who's rating?</h2>
+  <p class="muted small">This device remembers who you picked. Anyone can switch at any time.</p>
+  <div id="me-list" class="me-list"></div>
+  <div class="actions">
+    <button type="button" id="manage-people" class="ghost">Manage people…</button>
+    <span class="spacer"></span>
+    <button type="button" id="me-close" class="ghost">Close</button>
+  </div>
+</dialog>
+
+<!-- manage people -->
+<dialog id="people-dialog">
+  <h2>Household</h2>
+  <p class="muted small">Everyone who rates movies. "Also known as" is a person's Emby user name or Netflix profile name,
+    so imported history is credited to the right person. Set a kid's age-rating limit, and any suggestions that include them
+    stay within it (US MPA ratings from TMDB; movies with no US rating are left out). With a birthdate, imported
+    Emby / Netflix / CSV viewings from before "count history from age" don't count for that person.</p>
+  <div id="people-rows"></div>
+  <form id="add-person" class="add-person">
+    <input id="np-emoji" placeholder="🙂" maxlength="4" class="emoji-in" aria-label="Emoji">
+    <input id="np-name" placeholder="Name" required>
+    <button class="primary" type="submit">Add</button>
+  </form>
+  <div id="unlinked-wrap" hidden>
+    <h3>Names from Emby / Netflix not linked to anyone</h3>
+    <p class="muted small">Link each one to a person (e.g. Emby's "Bmartin" is Blake), or add them as a new person.
+      Movies watched by an unlinked name are kept out of everyone's suggestions, to be safe.</p>
+    <div id="unlinked"></div>
+  </div>
+  <p id="people-error" class="error"></p>
+  <div class="actions">
+    <span class="spacer"></span>
+    <button type="button" id="people-close" class="primary">Done</button>
+  </div>
+</dialog>
+
+<!-- Netflix import -->
+<dialog id="netflix-dialog">
+  <form id="netflix-form" method="dialog">
+    <h2>Import Netflix history</h2>
+    <ol class="muted small steps">
+      <li>On netflix.com: <b>Account → Profiles →</b> pick a profile <b>→ Viewing activity</b></li>
+      <li>Scroll to the bottom and click <b>Download all</b>. You'll get <code>NetflixViewingHistory.csv</code>.</li>
+      <li>Upload it here. Do each profile separately.</li>
+    </ol>
+    <label>File <input id="nf-file" type="file" accept=".csv,text/csv" required></label>
+    <label>Whose profile is it? <select id="nf-profile" required></select></label>
+    <p class="muted small">TV episodes are skipped. Movies are matched to TMDB and land in <b>To rate</b> with their Netflix watch date.
+      Anything already rated or already queued from Emby is not duplicated.</p>
+    <div id="nf-result"></div>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" id="nf-close" class="ghost">Close</button>
+      <button type="submit" class="primary" id="nf-go">Import</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- "Wrong movie?" picker -->
+<dialog id="rematch-dialog">
+  <h2>Which movie is it?</h2>
+  <p class="muted small" id="rematch-current"></p>
+  <input id="rematch-search" autocomplete="off" placeholder="Search…">
+  <ul id="rematch-results" class="results"></ul>
+  <p id="rematch-error" class="error"></p>
+  <div class="actions">
+    <span class="spacer"></span>
+    <button type="button" id="rematch-close" class="ghost">Cancel</button>
+  </div>
+</dialog>
+
+<!-- generic CSV import (rental lists etc.) -->
+<dialog id="csv-dialog">
+  <form id="csv-form" method="dialog">
+    <h2>Import a CSV</h2>
+    <p class="muted small">Any list of movies works: rental or purchase history (Redbox, Vudu, Amazon, Apple…), a spreadsheet export, etc.
+      Each matched movie goes into <b>To rate</b>; TV episodes are skipped.</p>
+    <label>File <input id="csv-file" type="file" accept=".csv,.tsv,.txt,text/csv" required></label>
+    <div id="csv-map" hidden>
+      <p class="muted small" id="csv-rows"></p>
+      <div class="csv-sample-wrap"><table id="csv-sample"></table></div>
+      <div class="row">
+        <label>Movie title column <select id="csv-title" required></select></label>
+        <label>Year column <select id="csv-year"></select></label>
+        <label>Date watched / rented <select id="csv-date"></select></label>
+      </div>
+      <div class="row">
+        <label>Whose list is it? <select id="csv-profile" required></select></label>
+        <label>Label <input id="csv-source" maxlength="24" placeholder="Rental" value="Rental"></label>
+      </div>
+    </div>
+    <div id="csv-result"></div>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" id="csv-close" class="ghost">Close</button>
+      <button type="submit" class="primary" id="csv-go" disabled>Import</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

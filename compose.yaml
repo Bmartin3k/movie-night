@@ -1,0 +1,15 @@
+# Movie Night, served on the LAN at http://<this-machine>:8095
+# Start/update:  docker compose up -d --build     Stop:  docker compose down
+services:
+  movie-app:
+    build: .
+    image: movie-app:local
+    container_name: movie-app
+    restart: unless-stopped
+    ports:
+      - "8095:8000"
+    env_file: .env
+    volumes:
+      - ./data:/data
+    labels:
+      - com.centurylinklabs.watchtower.enable=false   # locally built image, nothing to pull
