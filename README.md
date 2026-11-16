@@ -53,6 +53,10 @@ then get suggestions for one person or any group watching together.
   TV episodes are skipped; movies are matched to TMDB on exact title (released before the watch date, most-voted
   wins) and queued with the latest watch date. Titles that don't match are listed so you can add them by hand.
   Re-importing is safe, and movies already queued from Emby are merged rather than duplicated.
+- **✕ (Not interested)** on a suggestion hides it for the whole household, and counts as a mild dislike: a quarter
+  of a 1★ rating's pull on what TMDB links to it. One ✕ barely changes anything, but a pattern of them
+  (several animated Batman films, say) sinks similar picks. Ask Claude is told to avoid them and movies like them.
+  "Bring back dismissed picks" (bottom of Suggestions) undoes all of it.
 - **Already watched** on any suggestion adds it to Watched with that movie filled in; it then stops being suggested.
 - **CSV import** (To rate → ⇪ Import CSV): any list of movies, e.g. rental/purchase history. Upload, check the
   guessed Title / Year / Date columns, pick whose list it is and a label (shown on the cards). Format tags like

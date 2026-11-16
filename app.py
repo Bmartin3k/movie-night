@@ -33,7 +33,8 @@ EMBY_KEY = os.environ.get("EMBY_API_KEY", "").strip()
 # Optional comma list of Emby user names to import; empty = every user
 EMBY_USERS = [u.strip().lower() for u in os.environ.get("EMBY_USERS", "").split(",") if u.strip()]
 EMBY_SYNC_HOURS = float(os.environ.get("EMBY_SYNC_HOURS", "6"))
-OMDB_KEY = os.environ.get("OMDB_API_KEY", "").strip()   # optional: Rotten Tomatoes scores via omdbapi.com
+OMDB_KEY = os.environ.get("OMDB_API_KEY", "").strip()
+DISMISS_WEIGHT = 0.25 * (2 - 5.5)     # a dismissed pick pulls like a quarter of a 1★ (2/10) rating: -0.875   # optional: Rotten Tomatoes scores via omdbapi.com
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -956,6 +957,12 @@ def suggestions():
 
     # the strongest seeds first, capped so a big library doesn't fan out into hundreds of calls
     ranked = sorted(seeds.items(), key=lambda kv: -abs(sum(r for _, r in kv[1]["in"]) / len(kv[1]["in"]) - 5.5))[:80]
+    # Dismissed picks ("Not interested") count as a mild dislike: a quarter of a 1★ rating's pull, so one
+    # dismissal barely moves anything but a pattern of them (say, several animated Batman films) sinks what
+    # TMDB links to them. Household-wide, like dismissing itself.
+    for r in conn.execute("SELECT tmdb_id, title FROM dismissed WHERE tmdb_id IS NOT NULL"):
+        if r[0] not in seeds:
+            ranked.append((r[0], {"title": r[1], "in": [], "dismissed": True}))
 
     SOURCES = (("recommendations", 1.0), ("similar", 0.5))      # (TMDB list, weight)
 
@@ -972,9 +979,12 @@ def suggestions():
     genres = genre_map()
     cands = {}
     for tid, seed in ranked:
-        w = sum(r - 5.5 for _, r in seed["in"]) / len(seed["in"])
-        fans = [names.get(p) for p, r in seed["in"] if r >= 8]
-        avg = round(sum(r for _, r in seed["in"]) / len(seed["in"]), 1)
+        if seed.get("dismissed"):
+            w, fans, avg = DISMISS_WEIGHT, [], None
+        else:
+            w = sum(r - 5.5 for _, r in seed["in"]) / len(seed["in"])
+            fans = [names.get(p) for p, r in seed["in"] if r >= 8]
+            avg = round(sum(r for _, r in seed["in"]) / len(seed["in"]), 1)
         for kind, kw in SOURCES:
             for pos, m in enumerate(results.get((tid, kind), [])):
                 if m["id"] in skip or m["id"] == tid:
@@ -1125,9 +1135,12 @@ def claude_suggestions():
     if elsewhere:
         prompt += ("\n\nOther household members loved these, and nobody above has seen them (fair game):\n"
                    + "\n".join(elsewhere[:40]))
-    if dismissed or saved:
-        prompt += "\n\nAlready suggested and excluded (don't suggest these either):\n" + "\n".join(
-            f"- {r['title']}" for r in [*dismissed, *saved])
+    if dismissed:
+        prompt += ("\n\nThe household marked these \"not interested\". Don't suggest them, and lean away from "
+                   "movies very like them:\n" + "\n".join(f"- {r['title']}" for r in dismissed))
+    if saved:
+        prompt += "\n\nAlready on their watchlist (don't suggest these again):\n" + "\n".join(
+            f"- {r['title']}" for r in saved)
     unrated = []
     dec, cut = declined_map(conn), age_cutoffs(conn)
     for r in conn.execute("SELECT tmdb_id, title, year, watched_by, watched_on FROM emby_queue ORDER BY watched_on DESC LIMIT 400"):
