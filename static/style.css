@@ -61,7 +61,7 @@ main { max-width: 1300px; margin: 0 auto; padding: 1rem 16px 4rem; }
 #nf-result .sum { background: var(--panel-2); border-radius: 8px; padding: .6rem .8rem; margin-top: .6rem; }
 #nf-result details { margin-top: .4rem; font-size: .85rem; color: var(--muted); }
 #nf-result details ul { max-height: 160px; overflow-y: auto; margin: .3rem 0; padding-left: 1.1rem; }
-.card .src { position: absolute; bottom: .4rem; left: .4rem; background: rgba(0,0,0,.75); border-radius: 6px; padding: .05rem .4rem; font-size: .72rem; color: var(--muted); }
+.card .src { position: absolute; top: .4rem; right: .4rem; background: rgba(0,0,0,.75); border-radius: 6px; padding: .05rem .4rem; font-size: .72rem; color: var(--muted); }
 .card.done { opacity: .35; pointer-events: none; transition: opacity .3s; }
 input, select, textarea {
   font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);

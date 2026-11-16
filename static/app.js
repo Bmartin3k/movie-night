@@ -352,7 +352,7 @@ function queueCard(q) {
   const notNames = (q.not_watched || []).filter((id) => id !== state.me).map((id) => person(id)?.name).filter(Boolean);
   const others = q.ratings?.length ? `<div class="who">${q.ratings.map((r) => `<span>${esc(r.name)} ${fmtR(r.rating)}</span>`).join("")}</div>` : "";
   const credit = q.credited ? `<span class="needs">${q.kind === "movie" ? "You watched this" : "Imports say you watched"}</span>` : "";
-  return `<article class="card" data-key="${esc(q.key)}" data-r="${pre}">
+  return `<article class="card" data-key="${esc(q.key)}" data-r="${pre}" data-tmdb="${q.tmdb_id ?? ""}">
     <div style="position:relative">${poster(q)}${pre ? '<span class="fav">❤</span>' : ""}<span class="src">${esc(srcLabel(q))}</span></div>
     <div class="body">
       <div class="title">${esc(q.title)}</div>
@@ -385,6 +385,7 @@ function renderQueue() {
   const declinedN = state.queue.length - live.length;
   const creditedN = live.filter((q) => q.credited).length;
   $("#torate-grid").innerHTML = list.slice(0, state.queueShown).map(queueCard).join("");
+  fillRT($("#torate-grid"));                // critic badges for the cards on screen only
   const more = $("#torate-more");
   more.hidden = list.length <= state.queueShown;
   more.textContent = `Show more (${list.length - state.queueShown} left)`;
