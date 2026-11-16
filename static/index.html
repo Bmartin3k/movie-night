@@ -165,7 +165,8 @@
     <h2>Settings</h2>
     <p class="muted small">API keys and connections. What you save here takes over from the <code>.env</code> file
       straight away, no restart. Saved keys are never shown again, only their last 4 characters; leave a key box
-      empty to keep it. Anyone who can open this app can change these.</p>
+      empty to keep it. They're kept in <code>data/settings.json</code> (owner-only, not in backups).
+      Changing a Radarr or Emby URL needs its key typed again. Anyone who can open this app can change these.</p>
     <div id="settings-body"></div>
     <p id="settings-error" class="error"></p>
     <div class="actions">

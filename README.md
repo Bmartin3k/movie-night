@@ -83,8 +83,10 @@ You need a machine with Docker (with the Compose plugin) and a free TMDB API key
 
 Then, in the app:
 0. Open **⚙ Settings** (top right) and paste your API keys. **Test** checks each one against the real service.
-   Keys saved there take over from `.env` straight away, no restart. They're stored in `data/movies.db` (and its
-   backups) and never shown again, only their last 4 characters. **Use .env** forgets a saved value.
+   Keys saved there take over from `.env` straight away, no restart. They're stored in `data/settings.json`
+   (readable only by the app's user, mode 600, and kept out of the database and its backups) and never shown again,
+   only their last 4 characters. **Use .env** forgets a saved value. Changing the Radarr or Emby URL needs its
+   API key typed again, so a changed URL can't be used to send your saved key to some other server.
 1. Tap **👤 Who's rating?** → **Manage people** and add everyone in the household. Add an "also known as" name for
    anyone whose Emby user or Netflix profile has a different name, plus a birthdate / kid setting for kids if you like.
 2. Pick who's rating on this device, and start adding movies: search in **Watched**, sync Emby, or import

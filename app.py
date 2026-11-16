@@ -116,10 +116,6 @@ CREATE TABLE IF NOT EXISTS tmdb_remap (     -- "Wrong movie?" fixes: imports mat
     to_id       INTEGER NOT NULL,
     created_at  INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS settings (          -- values saved on the Settings page; they override .env
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -232,17 +228,47 @@ SETTINGS = [
 SETTING_KEYS = {k for k, *_ in SETTINGS}
 
 
-def saved_settings(conn):
-    return {r[0]: r[1] for r in conn.execute("SELECT key, value FROM settings") if r[0] in SETTING_KEYS}
+# Saved values live in their own file next to the database, readable only by the app's user (0600), and NOT in
+# the database, so they never end up in data/backups (which may be copied to other machines).
+SETTINGS_PATH = os.path.join(os.path.dirname(DB_PATH) or ".", "settings.json")
+URL_KEY = {"RADARR_URL": "RADARR_API_KEY", "EMBY_URL": "EMBY_API_KEY"}   # changing a URL needs its key re-entered
+
+
+def saved_settings(conn=None):
+    try:
+        with open(SETTINGS_PATH) as f:
+            d = json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+    return {k: str(v) for k, v in d.items() if k in SETTING_KEYS}
+
+
+def write_settings(d):
+    tmp = SETTINGS_PATH + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(d, f, indent=1)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, SETTINGS_PATH)
 
 
 def setting(conn, key):
     """-> (value, source): saved on the Settings page beats .env."""
-    saved = saved_settings(conn)
+    saved = saved_settings()
     if key in saved:
         return saved[key], "saved"
     v = os.environ.get(key, "").strip()
     return v, ("env" if v else "")
+
+
+def _settings_out_of_db(conn):
+    """Earlier versions kept saved settings in a database table: move them to the file, drop the table."""
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'").fetchone():
+        rows = {r[0]: r[1] for r in conn.execute("SELECT key, value FROM settings") if r[0] in SETTING_KEYS}
+        if rows:
+            write_settings({**saved_settings(), **rows})
+        conn.execute("DROP TABLE settings")
+        conn.commit()
 
 
 def apply_settings(conn):
@@ -798,14 +824,22 @@ def put_settings():
     """{"KEY": "value"} saves it (overrides .env); {"KEY": null} forgets the saved value (back to .env)."""
     b = request.get_json(force=True) or {}
     conn = db()
-    for k, v in b.items():
+    for k in b:
         if k not in SETTING_KEYS:
             return jsonify(error=f"unknown setting {k}"), 400
+    # Pointing Radarr/Emby somewhere new would send the stored key there: the key has to be typed again with it.
+    for url_k, key_k in URL_KEY.items():
+        if isinstance(b.get(url_k), str):
+            new, cur = b[url_k].strip().rstrip("/"), setting(conn, url_k)[0].rstrip("/")
+            if new != cur and new and setting(conn, key_k)[0] and not (isinstance(b.get(key_k), str) and b[key_k].strip()):
+                return jsonify(error=f"Changing the {url_k.split('_')[0].title()} URL: enter its API key again too"), 400
+    saved = saved_settings()
+    for k, v in b.items():
         if v is None:
-            conn.execute("DELETE FROM settings WHERE key=?", (k,))
+            saved.pop(k, None)
         else:
-            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)", (k, str(v).strip()[:500]))
-    conn.commit()
+            saved[k] = str(v).strip()[:500]
+    write_settings(saved)
     apply_settings(conn)
     return get_settings()
 
@@ -2315,6 +2349,7 @@ def _backup_background():
 
 
 with connect() as _c:
+    _settings_out_of_db(_c)
     apply_settings(_c)
 
 if BACKUP_KEEP > 0:

@@ -408,6 +408,15 @@ def test_settings_override_env_and_never_return_secrets(client, monkeypatch):
     client.put("/api/settings", json={"OMDB_API_KEY": None})                            # forget: back to .env
     assert get()["OMDB_API_KEY"]["source"] == "env" and A.OMDB_KEY == "env-omdb-key-1234"
     assert client.put("/api/settings", json={"PUID": "0"}).status_code == 400            # only known settings
+    assert oct(os.stat(A.SETTINGS_PATH).st_mode & 0o777) == "0o600"                    # own file, owner-only
+    conn = A.connect()
+    assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='settings'").fetchone()   # not in the DB/backups
+    # a new Radarr URL with the old key would hand the key to that server: it has to be re-entered
+    client.put("/api/settings", json={"RADARR_API_KEY": "radarr-key-5678"})
+    r = client.put("/api/settings", json={"RADARR_URL": "http://elsewhere:7878"})
+    assert r.status_code == 400 and A.RADARR_URL == "http://saved:7878"
+    assert client.put("/api/settings", json={"RADARR_URL": "http://elsewhere:7878", "RADARR_API_KEY": "k2-abcdefgh"}).status_code == 200
+    client.put("/api/settings", json={"RADARR_API_KEY": None})
     client.put("/api/settings", json={"RADARR_URL": None})
     monkeypatch.delenv("OMDB_API_KEY")
     monkeypatch.delenv("RADARR_URL")
