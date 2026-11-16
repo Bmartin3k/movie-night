@@ -1184,7 +1184,10 @@ function passwordSection() {
       ? "On. Settings, age limits, birthdates and removing someone ask for it; everything else stays open. Unlocking lasts 15 minutes from the last change."
       : "Off. Set one so kids can use the app but can't change Settings, age limits or birthdates, or remove anyone."}</div>
     <label>${on ? "New password" : "Password"}
-      <span class="set-field"><input id="pw-new" type="password" autocomplete="new-password" placeholder="at least 4 characters">
+      <span class="set-field"><input id="pw-new" type="password" autocomplete="new-password" placeholder="at least 4 characters"></span>
+    </label>
+    <label>Type it again
+      <span class="set-field"><input id="pw-again" type="password" autocomplete="new-password" placeholder="same password">
         <button type="button" class="ghost" data-pw="set">${on ? "Change" : "Set"}</button>
         ${on ? `<button type="button" class="ghost small-btn" data-pw="off">Turn off</button>` : ""}</span>
     </label><div class="set-test" id="pw-msg"></div></div>`;
@@ -1236,7 +1239,9 @@ $("#settings-body").addEventListener("click", async (e) => {
       if (pw.dataset.pw === "lock") { await api("/lock", { method: "POST" }); $("#settings-dialog").close(); return; }
       if (pw.dataset.pw === "off" && !confirm("Turn the settings password off? Anyone could change Settings and age limits again.")) return;
       const v = pw.dataset.pw === "off" ? "" : $("#pw-new").value;
-      if (pw.dataset.pw === "set" && v.length < 4) { $("#pw-msg").className = "set-test bad"; $("#pw-msg").textContent = "Use at least 4 characters"; return; }
+      const bad = (m) => { $("#pw-msg").className = "set-test bad"; $("#pw-msg").textContent = m; };
+      if (pw.dataset.pw === "set" && v.length < 4) return bad("Use at least 4 characters");
+      if (pw.dataset.pw === "set" && v !== $("#pw-again").value) { $("#pw-again").value = ""; $("#pw-again").focus(); return bad("The two don't match. Type it again."); }
       state.lock = await api("/password", { method: "PUT", body: { password: v } });
       renderSettings();
       $("#pw-msg").className = "set-test ok";
