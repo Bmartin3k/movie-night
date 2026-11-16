@@ -657,6 +657,7 @@ function renderSuggestions() {
   const fresh = state.status.rt && state.freshOnly;
   fb.setAttribute("aria-pressed", String(!!fresh));
   const all = state.suggestions || [];
+  all.forEach((m) => { if (m.tmdb_id && "mc" in m && !(m.tmdb_id in rtCache)) rtCache[m.tmdb_id] = { rt: m.rt, mc: m.mc }; });
   const unknown = fresh && !rtFailed && all.some((m) => m.tmdb_id && !(m.tmdb_id in rtCache));
   const list = all.filter((m) => (!g || (m.genres || []).includes(g)) && (!fresh || isFresh(m)));
   $("#suggest-grid").innerHTML = unknown ? `<div class="spinner">Checking Rotten Tomatoes scores…</div>` : list.map((m) => suggestionCard(m)).join("");
@@ -674,11 +675,13 @@ function renderClaude() { $("#claude-grid").innerHTML = claudeResults.map((m) =>
 
 // Rotten Tomatoes Tomatometer badges (OMDb), fetched after the cards are drawn so they never slow them down
 const rtCache = {};
-function rtBadge(card, v) {
-  if (!v || card.querySelector(".rt")) return;
-  const n = parseInt(v, 10);
-  card.querySelector(".poster")?.insertAdjacentHTML("beforeend",
-    `<span class="rt ${n >= 60 ? "fresh" : "rotten"}" title="Rotten Tomatoes Tomatometer">${n >= 60 ? "🍅" : "🤢"} ${esc(v)}</span>`);
+function rtBadge(card, v) {           // v = {rt: "92%" | null, mc: 74 | null}
+  if (!v || (!v.rt && v.mc == null) || card.querySelector(".rt")) return;
+  const n = parseInt(v.rt, 10);
+  const parts = [];
+  if (v.rt) parts.push(`<span title="Rotten Tomatoes Tomatometer">${n >= 60 ? "🍅" : "🤢"} ${esc(v.rt)}</span>`);
+  if (v.mc != null) parts.push(`<span class="mc ${v.mc >= 61 ? "good" : v.mc >= 40 ? "mixed" : "bad"}" title="Metacritic Metascore">${Number(v.mc)}</span>`);
+  card.querySelector(".poster")?.insertAdjacentHTML("beforeend", `<span class="rt">${parts.join(" ")}</span>`);
 }
 let rtFailed = false;
 async function loadRT(ids, onBatch) {      // fetch scores we don't have yet, 40 at a time
@@ -695,7 +698,7 @@ async function fillRT(grid) {
   paintRT(grid);
   await loadRT([...grid.querySelectorAll(".card[data-tmdb]")].map((c) => c.dataset.tmdb), () => paintRT(grid));
 }
-const isFresh = (m) => parseInt(rtCache[m.tmdb_id], 10) >= 60;
+const isFresh = (m) => parseInt(rtCache[m.tmdb_id]?.rt, 10) >= 60;
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();

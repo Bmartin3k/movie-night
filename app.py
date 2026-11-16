@@ -373,40 +373,59 @@ def tmdb_get(path, params=None, cache=True):
 _omdb_pause_until = 0.0     # set when OMDb rejects the key or the daily limit is hit
 
 
-def rt_score(tid):
-    """Rotten Tomatoes Tomatometer for a TMDB id, e.g. "92%", or None. OMDb is looked up by IMDb id
-    (from TMDB). Results, including "no score", are cached for a week to stay under OMDb's daily limit."""
+NO_SCORES = {"rt": None, "mc": None}
+
+
+def critic_scores(tid):
+    """Rotten Tomatoes Tomatometer ("92%") and Metacritic Metascore (74) for a TMDB id, from one OMDb
+    lookup by IMDb id (from TMDB). Either can be None. Results, including "no score", are cached for a
+    week to stay under OMDb's daily limit."""
     global _omdb_pause_until
     key = f"omdb:{int(tid)}"
     conn = connect()
     try:
         hit = conn.execute("SELECT value, fetched_at FROM cache WHERE key=?", (key,)).fetchone()
         if hit and time.time() - hit["fetched_at"] < CACHE_TTL:
-            return json.loads(hit["value"]).get("rt")
+            v = json.loads(hit["value"])
+            if "mc" in v:                 # entries from before Metacritic was stored get looked up again
+                return v
         if not OMDB_KEY or time.time() < _omdb_pause_until:
-            return None
+            return NO_SCORES
         try:
             imdb = tmdb_get(f"/movie/{int(tid)}").get("imdb_id")
         except TMDBError:
-            return None
-        rt = None
+            return NO_SCORES
+        rt = mc = None
         if imdb:
             try:
                 d = requests.get("https://www.omdbapi.com/", params={"i": imdb, "apikey": OMDB_KEY}, timeout=10).json()
             except (requests.RequestException, ValueError):
-                return None
+                return NO_SCORES
             err = d.get("Error") or ""
             if "key" in err.lower() or "limit" in err.lower():   # invalid/unactivated key or daily limit: retry in an hour
                 _omdb_pause_until = time.time() + 3600
                 app.logger.warning("OMDb: %s", err)
-                return None
+                return NO_SCORES
             rt = next((r["Value"] for r in d.get("Ratings") or [] if r.get("Source") == "Rotten Tomatoes"), None)
+            mc = int(d["Metascore"]) if str(d.get("Metascore", "")).isdigit() else None
+        v = {"rt": rt, "mc": mc}
         conn.execute("INSERT OR REPLACE INTO cache (key, value, fetched_at) VALUES (?,?,?)",
-                     (key, json.dumps({"rt": rt}), int(time.time())))
+                     (key, json.dumps(v), int(time.time())))
         conn.commit()
-        return rt
+        return v
     finally:
         conn.close()
+
+
+def critic_factor(s):
+    """Ranking multiplier from the critics: the average of Tomatometer and Metascore (whichever exist),
+    60 = neutral, 100 = x1.2, 0 = x0.7. No scores = x1."""
+    vals = [int(s["rt"].rstrip("%"))] if s.get("rt") else []
+    vals += [s["mc"]] if s.get("mc") is not None else []
+    if not vals:
+        return 1.0
+    c = sum(vals) / len(vals)
+    return 1 + (c - 60) / 40 * 0.2 if c >= 60 else 1 + (c - 60) / 60 * 0.3
 
 
 def genre_map():
@@ -499,12 +518,12 @@ def index():
 
 @app.get("/api/rt")
 def rt_scores():
-    """?ids=603,550 -> {"603": "83%", "550": null}: Rotten Tomatoes scores for the cards on screen."""
+    """?ids=603,550 -> {"603": {"rt": "83%", "mc": 73}, ...}: critic scores for the cards on screen."""
     ids = [int(x) for x in request.args.get("ids", "").split(",") if x.strip().isdigit()][:80]
     if not OMDB_KEY or not ids:
         return jsonify({})
     with ThreadPoolExecutor(8) as ex:
-        return jsonify(dict(zip(map(str, ids), ex.map(rt_score, ids))))
+        return jsonify(dict(zip(map(str, ids), ex.map(critic_scores, ids))))
 
 
 @app.get("/api/status")
@@ -1004,7 +1023,17 @@ def suggestions():
     for o in out:
         o["saved"] = o["tmdb_id"] in saved
     out.sort(key=lambda x: x["score"], reverse=True)
-    return jsonify(apply_cert_limit(out, group_limit(conn, group), keep=90))
+    # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
+    # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
+    out = apply_cert_limit(out, group_limit(conn, group), keep=150)
+    if OMDB_KEY:
+        top = [o for o in out if o.get("tmdb_id")]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for o, s_ in zip(top, pool.map(lambda o: critic_scores(o["tmdb_id"]), top)):
+                o["rt"], o["mc"] = s_["rt"], s_["mc"]
+                o["score"] = round(o["score"] * critic_factor(s_), 2)
+        out.sort(key=lambda x: x["score"], reverse=True)
+    return jsonify(out[:90])
 
 
 # ---------------------------------------------------------------- suggestions: Claude

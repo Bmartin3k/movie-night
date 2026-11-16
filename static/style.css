@@ -87,7 +87,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   border-radius: 6px; padding: .1rem .4rem; font-weight: 700; font-size: .8rem;
 }
 #fresh-only[aria-pressed="true"] { background: var(--accent); color: #111; border-color: var(--accent); }
-.card .rt.rotten { color: #b8d98a; }
+.card .rt .mc { display: inline-block; min-width: 1.6em; text-align: center; border-radius: 4px; padding: 0 .25rem; margin-left: .15rem; color: #fff; }
+.card .rt .mc.good { background: #00ce7a; color: #111; }
+.card .rt .mc.mixed { background: #ffbd3f; color: #111; }
+.card .rt .mc.bad { background: #ff6874; color: #111; }
 .card .body { padding: .55rem .65rem .7rem; display: flex; flex-direction: column; gap: .25rem; flex: 1; }
 .card .title { font-weight: 600; line-height: 1.25; }
 .card .meta { color: var(--muted); font-size: .8rem; }
