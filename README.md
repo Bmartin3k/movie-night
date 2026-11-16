@@ -21,6 +21,7 @@ then get suggestions for one person or any group watching together.
     TMDB's "similar movies" add more candidates. They're looser matches, so each counts for half and only once,
     which keeps them from crowding out the real recommendations. Up to 90 picks are shown.
     For one person, movies another family member rated 4+★ that they haven't seen are included too.
+    When a kid is in the group, that bonus counts half, so the kids' own matches come first.
   - *Ask Claude*: sends the whole rated list (with notes) plus an optional mood ("something light for Friday")
     to Claude, which returns 8 picks with a reason for each. For a group it looks for common ground. Uses `claude-opus-5-5` (override with `CLAUDE_MODEL`).
     Each click costs a few cents.

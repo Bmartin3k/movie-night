@@ -1019,7 +1019,8 @@ def suggestions():
                     "overview": r["overview"], "genres": json.loads(r["genres"] or "[]"), "vote_average": None,
                     "score": 0.0, "because": []}
             out.append(item)
-        item["score"] = round(item["score"] + (best - 5.5) * 1.5, 2)
+        # a parent's 5★ shouldn't bury the kids' own matches: half weight when a kid is in the group
+        item["score"] = round(item["score"] + (best - 5.5) * 1.5 * (0.5 if group_limit(conn, group) else 1), 2)
         item["loved_by"] = [{"name": n, "rating": rt} for n, rt in e["fans"]]
     for o in out:
         o["saved"] = o["tmdb_id"] in saved
