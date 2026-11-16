@@ -1063,22 +1063,16 @@ def get_watchlist():
         return jsonify(rows)
     group = set(selected_people(conn, request.args.get("people")))
     seen = seen_by(conn, group)
+    rw = rewatchable(conn, group, seen)
     dismissed = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")}
-    rated = {}
-    for r in conn.execute("SELECT m.tmdb_id, w.person_id, w.rating FROM movies m JOIN watches w ON w.movie_id=m.id "
-                          "WHERE m.tmdb_id IS NOT NULL AND w.rating IS NOT NULL"):
-        if r[1] in group:
-            rated.setdefault(r[0], {})[names[r[1]]] = r[2]
 
     def still_on(d):
-        who = seen.get(d["tmdb_id"], set())
-        if not who:
+        if d["tmdb_id"] not in seen:
             return True
-        r = rated.get(d["tmdb_id"], {})
-        if "someone" in who or who >= {names[p] for p in group} or any((r.get(n) or 0) < 9 for n in who):
-            return False
-        d["rewatch"] = [{"name": n, "rating": r[n]} for n in sorted(who)]
-        return True
+        if d["tmdb_id"] in rw:
+            d["rewatch"] = rw[d["tmdb_id"]]
+            return True
+        return False
 
     rows = [d for d in rows if (d["saved_for"] is None or group & set(d["saved_for"]))
             and d["tmdb_id"] not in dismissed and still_on(d)]
@@ -1195,6 +1189,26 @@ def seen_by(conn, group=None):
 def excluded_ids(conn, group=None):
     """TMDB ids not to suggest to `group`: anything dismissed, and anything someone in it has seen."""
     return {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | set(seen_by(conn, group))
+
+
+def rewatchable(conn, group, seen=None):
+    """{tmdb_id: [{"name", "rating"}]}: movies some of `group` have seen and all of those rated 4½★+ (9/10),
+    while someone else in the group is still new to them, so they can be shared. Seen without a rating,
+    skipped, or seen by someone unlinked ("someone") doesn't qualify."""
+    names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people")}
+    everyone = {names[p] for p in group}
+    seen = seen if seen is not None else seen_by(conn, group)
+    rated = {}
+    for r in conn.execute("SELECT m.tmdb_id, w.person_id, w.rating FROM movies m JOIN watches w ON w.movie_id=m.id "
+                          "WHERE m.tmdb_id IS NOT NULL AND w.rating IS NOT NULL"):
+        if r[1] in group:
+            rated.setdefault(r[0], {})[names[r[1]]] = r[2]
+    out = {}
+    for tid, who in seen.items():
+        r = rated.get(tid, {})
+        if "someone" not in who and not who >= everyone and all((r.get(n) or 0) >= 9 for n in who):
+            out[tid] = [{"name": n, "rating": r[n]} for n in sorted(who)]
+    return out
 
 
 # ---------------------------------------------------------------- suggestions: TMDB
@@ -1374,7 +1388,8 @@ what all of them enjoy, and avoid anything close to what one of them strongly di
 are for one person, tailor them to that person alone.
 
 Suggest real, released feature films that nobody in the group has seen (never anything from the
-watched or excluded lists). Movies another household member loved are fair game if the group hasn't seen
+watched or excluded lists), except movies the prompt lists as exceptions: ones some of the group loved
+and the rest haven't seen. Movies another household member loved are fair game if the group hasn't seen
 them. Mix a few well-known picks with a few less obvious ones. Each reason is one or two sentences
 addressed to the group, naming the people and the specific movies on their lists it connects to."""
 
@@ -1390,11 +1405,11 @@ def claude_suggestions():
     names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people")}
     if not group:
         return jsonify(error="Add the people in your household first"), 400
-    rows = conn.execute("SELECT m.id, m.title, m.year, w.person_id, w.rating, w.notes FROM movies m "
+    rows = conn.execute("SELECT m.id, m.tmdb_id, m.title, m.year, w.person_id, w.rating, w.notes FROM movies m "
                         "JOIN watches w ON w.movie_id=m.id ORDER BY m.title").fetchall()
     by_movie = {}
     for r in rows:
-        by_movie.setdefault(r["id"], {"title": r["title"], "year": r["year"], "w": []})["w"].append(r)
+        by_movie.setdefault(r["id"], {"tmdb_id": r["tmdb_id"], "title": r["title"], "year": r["year"], "w": []})["w"].append(r)
     group_lines, elsewhere = [], []
     for m in by_movie.values():
         label = f"- {m['title']}" + (f" ({m['year']})" if m["year"] else "")
@@ -1414,8 +1429,11 @@ def claude_suggestions():
     if not any("/10" in l for l in group_lines):
         return jsonify(error="Nobody in this group has rated anything yet"), 400
     who = [names[p] for p in group]
+    # seen by some of the group, 4½★+ from all of them, new to the rest: fair game (same rule as the watchlist)
+    rw = rewatchable(conn, group)
     movies = [{"title": m["title"], "year": m["year"]} for m in by_movie.values()
-              if any(w["person_id"] in group for w in m["w"])]
+              if any(w["person_id"] in group for w in m["w"]) and m["tmdb_id"] not in rw]
+    shareable = [m for m in by_movie.values() if m["tmdb_id"] in rw]
     dismissed = conn.execute("SELECT title FROM dismissed WHERE title IS NOT NULL").fetchall()
     for_them = {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
     saved = [r for r in conn.execute("SELECT tmdb_id, title, year FROM watchlist") if r["tmdb_id"] in for_them]
@@ -1429,6 +1447,12 @@ def claude_suggestions():
     if elsewhere:
         prompt += ("\n\nOther household members loved these, and nobody above has seen them (fair game):\n"
                    + "\n".join(elsewhere[:40]))
+    if shareable:
+        prompt += ("\n\nException: these are on the list above, but only some of the group have seen them, and those "
+                   "people rated them 4½★ or higher (they'd happily watch again). They're fair game to suggest for the "
+                   "others; say who loved it:\n" + "\n".join(
+                       f"- {m['title']}" + (f" ({m['year']})" if m["year"] else "") + " — new to "
+                       + ", ".join(n for n in who if n not in {x["name"] for x in rw[m["tmdb_id"]]}) for m in shareable))
     if dismissed:
         prompt += ("\n\nThe household marked these \"not interested\". Don't suggest them, and lean away from "
                    "movies very like them:\n" + "\n".join(f"- {r['title']}" for r in dismissed))
@@ -1486,7 +1510,7 @@ def claude_suggestions():
         return jsonify(error="Claude's answer couldn't be read" + (" (cut off)" if resp.stop_reason == "max_tokens" else "")), 502
 
     # Match each pick to TMDB for posters / ids, and drop anything already watched.
-    skip = excluded_ids(conn, group)
+    skip = excluded_ids(conn, group) - set(rw)
     watched_titles = {(m["title"].lower(), m["year"]) for m in [*movies, *unrated]}
     genres = genre_map() if TMDB_KEY else {}
 
@@ -1510,6 +1534,9 @@ def claude_suggestions():
     out = [i for i in items      # also drop anything already on the group's watchlist, in case Claude ignored that
            if not (i["tmdb_id"] and (i["tmdb_id"] in skip or i["tmdb_id"] in for_them))
            and (i["title"].lower(), i["year"]) not in watched_titles]
+    for i in out:
+        if i["tmdb_id"] in rw:
+            i["rewatch"] = rw[i["tmdb_id"]]
     if limit and TMDB_KEY:   # double-check Claude against the real ratings
         out = apply_cert_limit(out, limit, keep=len(out))
     return jsonify(out)

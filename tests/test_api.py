@@ -352,3 +352,43 @@ def test_show_watched_tags_seen_picks(client, people, add_movie, fake_tmdb):
     jane = {m["title"]: m for m in get("&watched=1", str(j))}   # Jane alone: her own 4½★+ counts
     assert set(jane) == {"Seen pick", "Fresh pick", "Jane hasn't seen"} and "seen_by" not in jane["Jane hasn't seen"]
     assert "seen_by" not in both["Fresh pick"]
+
+
+# ---------------------------------------------------------------- Ask Claude (API faked)
+def test_claude_picks_follow_the_4_5_star_rule(client, people, add_movie, monkeypatch):
+    j, s = people["Jane"], people["Sam"]
+    add_movie(1, "Loved by Jane", {j: 9})
+    add_movie(2, "Jane so-so", {j: 7})
+    add_movie(3, "Both seen", {j: 10, s: 10})
+    picks = [{"title": t, "year": 2020, "reason": "r"} for t in ("Loved by Jane", "Jane so-so", "Both seen", "New one")]
+    ids = {"Loved by Jane": 1, "Jane so-so": 2, "Both seen": 3, "New one": 4}
+    prompts = []
+
+    class Fake:
+        def __init__(self):
+            self.beta = self
+            self.messages = self
+
+        def create(self, **kw):
+            prompts.append(kw["messages"][0]["content"])
+            block = type("B", (), {"type": "text", "text": json.dumps({"suggestions": picks})})
+            return type("R", (), {"stop_reason": "end_turn", "content": [block]})
+
+    def tmdb_get(path, params=None, cache=True):
+        if path == "/genre/movie/list":
+            return {"genres": []}
+        if path == "/search/movie":
+            t = params["query"]
+            return {"results": [{"id": ids[t], "title": t, "release_date": "2020-01-01", "genre_ids": []}]}
+        raise A.TMDBError(path)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr(A.anthropic, "Anthropic", Fake)
+    monkeypatch.setattr(A, "TMDB_KEY", "test")
+    monkeypatch.setattr(A, "tmdb_get", tmdb_get)
+    got = {m["title"]: m for m in client.post("/api/claude-suggestions", json={"people": [j, s]}).get_json()}
+    assert set(got) == {"Loved by Jane", "New one"}
+    assert got["Loved by Jane"]["rewatch"] == [{"name": "Jane", "rating": 9}]
+    assert "Loved by Jane (2020) — new to Sam" in prompts[0]
+    got = {m["title"] for m in client.post("/api/claude-suggestions", json={"people": [j]}).get_json()}
+    assert got == {"New one"}                       # Jane alone: nothing she's seen
