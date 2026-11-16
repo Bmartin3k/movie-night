@@ -906,11 +906,13 @@ def excluded_ids(conn, group=None):
 # ---------------------------------------------------------------- suggestions: TMDB
 @app.get("/api/suggestions")
 def suggestions():
-    """Score every TMDB recommendation of every movie the group rated.
+    """Score every TMDB recommendation and "similar movie" of every movie the group rated.
 
     Each seed movie's weight is the group's average of (rating - 5.5) over the people in the group who
     rated it: 10/10 -> +4.5, 6/10 -> +0.5, 5/10 -> -0.5, 1/10 -> -4.5. So a movie one person loved and
-    another hated mostly cancels out. Higher-ranked recommendations count more; a small
+    another hated mostly cancels out. TMDB's "similar" lists (genre/keyword matches) widen the pool, but
+    they're noisy (the same popular movies turn up under unrelated seeds), so a movie gets only its single
+    strongest "similar" match, at half weight, never a sum. Higher-ranked entries count more; a small
     popularity/quality term breaks ties. Movies someone *outside* the group loved that nobody in the
     group has seen are boosted too ("Ben loved this").
     """
@@ -935,14 +937,17 @@ def suggestions():
     # the strongest seeds first, capped so a big library doesn't fan out into hundreds of calls
     ranked = sorted(seeds.items(), key=lambda kv: -abs(sum(r for _, r in kv[1]["in"]) / len(kv[1]["in"]) - 5.5))[:80]
 
-    def fetch(tid):
+    SOURCES = (("recommendations", 1.0), ("similar", 0.5))      # (TMDB list, weight)
+
+    def fetch(job):
+        tid, kind = job
         try:
-            return tid, tmdb_get(f"/movie/{tid}/recommendations").get("results", [])
+            return job, tmdb_get(f"/movie/{tid}/{kind}").get("results", [])
         except TMDBError:
-            return tid, []
+            return job, []
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results = dict(pool.map(fetch, [t for t, _ in ranked]))
+        results = dict(pool.map(fetch, [(t, k) for t, _ in ranked for k, _ in SOURCES]))
 
     genres = genre_map()
     cands = {}
@@ -950,13 +955,18 @@ def suggestions():
         w = sum(r - 5.5 for _, r in seed["in"]) / len(seed["in"])
         fans = [names.get(p) for p, r in seed["in"] if r >= 8]
         avg = round(sum(r for _, r in seed["in"]) / len(seed["in"]), 1)
-        for pos, m in enumerate(results.get(tid, [])):
-            if m["id"] in skip:
-                continue
-            c = cands.setdefault(m["id"], {"movie": m, "score": 0.0, "because": []})
-            c["score"] += w * (1 - pos / 40)
-            if w > 0:
-                c["because"].append((w, seed["title"], fans, avg, len(seed["in"])))
+        for kind, kw in SOURCES:
+            for pos, m in enumerate(results.get((tid, kind), [])):
+                if m["id"] in skip or m["id"] == tid:
+                    continue
+                c = cands.setdefault(m["id"], {"movie": m, "score": 0.0, "sim_hi": 0.0, "sim_lo": 0.0, "because": {}})
+                v = w * kw * (1 - pos / 40)
+                if kind == "recommendations":
+                    c["score"] += v
+                else:                          # similar: keep only the strongest pull each way
+                    c["sim_hi"], c["sim_lo"] = max(c["sim_hi"], v), min(c["sim_lo"], v)
+                if w > 0:      # one "Because of" entry per seed, even if both lists have it
+                    c["because"][tid] = (w, seed["title"], fans, avg, len(seed["in"]))
 
     # loved by someone outside the group, unseen by the group: a direct, strong signal
     loved_elsewhere = {}
@@ -970,6 +980,7 @@ def suggestions():
 
     out = []
     for c in cands.values():
+        c["score"] += c["sim_hi"] + c["sim_lo"]
         if c["score"] <= 0 or not c["because"]:
             continue
         m = c["movie"]
@@ -977,7 +988,7 @@ def suggestions():
         s_ = slim(m, genres)
         s_["score"] = round(c["score"] + quality, 2)
         s_["because"] = [{"title": t, "fans": f, "avg": a, "raters": n}
-                         for _, t, f, a, n in sorted(c["because"], key=lambda x: -x[0])[:3]]
+                         for _, t, f, a, n in sorted(c["because"].values(), key=lambda x: -x[0])[:3]]
         out.append(s_)
     for tid, e in loved_elsewhere.items():
         r = e["row"]
@@ -993,7 +1004,7 @@ def suggestions():
     for o in out:
         o["saved"] = o["tmdb_id"] in saved
     out.sort(key=lambda x: x["score"], reverse=True)
-    return jsonify(apply_cert_limit(out, group_limit(conn, group)))
+    return jsonify(apply_cert_limit(out, group_limit(conn, group), keep=90))
 
 
 # ---------------------------------------------------------------- suggestions: Claude

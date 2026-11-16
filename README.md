@@ -18,6 +18,8 @@ then get suggestions for one person or any group watching together.
   - Pick **who it's for**: Everyone, one person, or any mix. Nothing anyone in that group has seen is suggested.
   - *Because you liked…*: TMDB recommendations of every movie the group rated, weighted by the group's
     **average** rating (4+★ pulls up, 2.5★ and under pushes down, so one person's dislike counts against it).
+    TMDB's "similar movies" add more candidates. They're looser matches, so each counts for half and only once,
+    which keeps them from crowding out the real recommendations. Up to 90 picks are shown.
     For one person, movies another family member rated 4+★ that they haven't seen are included too.
   - *Ask Claude*: sends the whole rated list (with notes) plus an optional mood ("something light for Friday")
     to Claude, which returns 8 picks with a reason for each. For a group it looks for common ground. Uses `claude-opus-5-5` (override with `CLAUDE_MODEL`).
