@@ -643,7 +643,7 @@ def test_watch_tonight_keeps_library_and_my_services(client, people, add_movie, 
     j = people["Jane"]
     add_movie(1, "Seed", {j: 10})
     recs[1] = [rec(101, "Nowhere"), rec(102, "On Netflix"), rec(103, "On Hulu"), rec(104, "Downloaded")]
-    offers = {102: [{"provider_name": "Netflix Standard with Ads"}], 103: [{"provider_name": "Hulu"}]}
+    offers = {102: [{"provider_name": "Netflix Standard with Ads", "logo_path": "/nf.png"}], 103: [{"provider_name": "Hulu"}]}
     inner = A.tmdb_get
 
     def tmdb_get(path, params=None, cache=True):
@@ -657,7 +657,7 @@ def test_watch_tonight_keeps_library_and_my_services(client, people, add_movie, 
     A._radarr_lib.update(at=time.time(), states={104: "downloaded", 101: "wanted"})
     got = client.get(f"/api/suggestions?people={j}&tonight=1").get_json()
     assert [m["title"] for m in got] == ["On Netflix", "Downloaded"]
-    assert got[0]["where"] == {"library": False, "stream": ["Netflix"]}
+    assert got[0]["where"] == {"library": False, "stream": ["Netflix"], "logos": {"Netflix": "/nf.png"}}
     assert len(titles(client, [j])) == 4                                   # off: everything
     w = client.get("/api/where?ids=102,104,101").get_json()
     assert w["104"]["library"] and not w["101"]["library"] and w["102"]["stream"] == ["Netflix"]

@@ -615,8 +615,12 @@ def where_to_watch(tid, lib=None):
             r = tmdb_get(f"/movie/{tid}/watch/providers").get("results", {}).get(STREAM_REGION, {})
         except TMDBError:
             r = {}
-        offers = [p.get("provider_name") for kind in ("flatrate", "free", "ads") for p in r.get(kind, [])]
-        out["stream"] = [s for s in STREAM_SERVICES if any(provider_matches(s, n) for n in offers)]
+        offers = [p for kind in ("flatrate", "free", "ads") for p in r.get(kind, [])]
+        for s in STREAM_SERVICES:
+            hit = next((p for p in offers if provider_matches(s, p.get("provider_name"))), None)
+            if hit:
+                out["stream"].append(s)
+                out.setdefault("logos", {})[s] = hit.get("logo_path")     # TMDB image path, shown as the icon
     return out
 
 

@@ -776,8 +776,10 @@ const whereCache = {};
 const tonightOn = () => !!(state.status?.tonight && state.tonight);
 function whereBadge(card, w) {
   if (!w || card.querySelector(".where") || (!w.library && !w.stream?.length)) return;
-  const tags = [...(w.library ? [`<span class="lib" title="In your library">▶ Library</span>`] : []),
-    ...w.stream.map((n) => `<span title="Streaming on ${esc(n)}">${esc(n)}</span>`)];
+  const tags = [...(w.library ? [`<span class="lib" title="In your library">▶</span>`] : []),
+    ...w.stream.map((n) => w.logos?.[n]
+      ? `<img src="${IMG}w92${esc(w.logos[n])}" alt="${esc(n)}" title="Streaming on ${esc(n)}">`
+      : `<span title="Streaming on ${esc(n)}">${esc(n)}</span>`)];
   card.querySelector(".poster")?.insertAdjacentHTML("beforeend", `<div class="where">${tags.join("")}</div>`);
 }
 async function loadWhere(ids) {
