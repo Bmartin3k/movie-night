@@ -70,9 +70,14 @@ then get suggestions for one person or any group watching together.
   Rating it, skipping it or pressing Remove only takes it off the list of the people who did; it stays for
   anyone else it was saved for. It has the same "for" chips as Suggestions (one shared selection) and shows
   what was saved for anyone selected that someone selected still hasn't seen (minus anything one of them rated under 2★) and, with a kid included, nothing
-  over their rating limit. Marking one "Watched it" moves it to Watched. With Radarr set up,
+  over their rating limit. **🍿 We watched it** marks everyone selected as having seen it today (rate it right there,
+  or later from each person's To rate); the same shortcut is in the Already watched dialog. With Radarr set up,
   each card shows whether Radarr has it (✓ Downloaded / ⏳ searching) or a **⬇ Request in Radarr** button that adds it
   (monitored, with a search) using your first quality profile and root folder, or the ones set in `.env`.
+- **📺 Watch tonight** (Suggestions and Watchlist): only movies Radarr has downloaded or that stream on a service you
+  pay for (pick them in ⚙ Settings → Streaming services; TMDB / JustWatch data, refreshed weekly). Every card shows where
+  it is (▶ Library, Netflix…). Every suggestion card has a **▶ Trailer** button (YouTube, from TMDB).
+  Because you liked… shows the top 15.
 
 ## Set up
 

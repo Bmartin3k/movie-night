@@ -581,7 +581,8 @@ def test_settings_password_overrides_pins(client, people, add_movie):
     assert client.put(f"/api/people/{s}/pin", json={"pin": ""}).status_code == 200   # grown-up resets a PIN
 
 
-def test_everyone_in_the_group_gets_an_equal_say(client, people, add_movie, fake_tmdb):
+def test_everyone_in_the_group_gets_an_equal_say(client, people, add_movie, fake_tmdb, monkeypatch):
+    monkeypatch.setattr(A, "SUGGEST_KEEP", 200)       # scoring test: look past the top 15
     recs, _, _ = fake_tmdb
     j, s = people["Jane"], people["Sam"]
     for i in range(100):                               # Jane has rated 100 movies at 5★, each with its own pick
@@ -625,3 +626,55 @@ def test_claude_prompt_gives_everyone_an_equal_say(client, people, add_movie, mo
     add_movie(50, "Both saw", {j: 5, s: 5})
     client.post("/api/claude-suggestions", json={"people": [j]})
     assert "Also seen" not in prompts[1] and prompts[1].count("— Jane ") == 61 and "[new to" not in prompts[1]   # alone: everything
+
+
+# ---------------------------------------------------------------- watch tonight, trailers, top 15
+def test_suggestions_show_the_top_15(client, people, add_movie, fake_tmdb):
+    recs, _, _ = fake_tmdb
+    j = people["Jane"]
+    add_movie(1, "Seed", {j: 10})
+    recs[1] = [rec(100 + i, f"Pick {i}") for i in range(30)]
+    got = titles(client, [j])
+    assert len(got) == 15 and got[0] == "Pick 0"
+
+
+def test_watch_tonight_keeps_library_and_my_services(client, people, add_movie, fake_tmdb, monkeypatch):
+    recs, _, _ = fake_tmdb
+    j = people["Jane"]
+    add_movie(1, "Seed", {j: 10})
+    recs[1] = [rec(101, "Nowhere"), rec(102, "On Netflix"), rec(103, "On Hulu"), rec(104, "Downloaded")]
+    offers = {102: [{"provider_name": "Netflix Standard with Ads"}], 103: [{"provider_name": "Hulu"}]}
+    inner = A.tmdb_get
+
+    def tmdb_get(path, params=None, cache=True):
+        if path.endswith("/watch/providers"):
+            return {"results": {"US": {"flatrate": offers.get(int(path.split("/")[2]), [])}}}
+        return inner(path, params, cache)
+    monkeypatch.setattr(A, "tmdb_get", tmdb_get)
+    monkeypatch.setattr(A, "STREAM_SERVICES", ["Netflix"])
+    monkeypatch.setattr(A, "RADARR_URL", "http://r")
+    monkeypatch.setattr(A, "RADARR_KEY", "k")
+    A._radarr_lib.update(at=time.time(), states={104: "downloaded", 101: "wanted"})
+    got = client.get(f"/api/suggestions?people={j}&tonight=1").get_json()
+    assert [m["title"] for m in got] == ["On Netflix", "Downloaded"]
+    assert got[0]["where"] == {"library": False, "stream": ["Netflix"]}
+    assert len(titles(client, [j])) == 4                                   # off: everything
+    w = client.get("/api/where?ids=102,104,101").get_json()
+    assert w["104"]["library"] and not w["101"]["library"] and w["102"]["stream"] == ["Netflix"]
+
+
+def test_provider_names_match_loosely_but_not_wildly():
+    assert A.provider_matches("Prime Video", "Amazon Prime Video")
+    assert A.provider_matches("Disney Plus", "Disney Plus")
+    assert not A.provider_matches("Max", "Paramount Plus Apple TV Channel")
+    assert not A.provider_matches("", "Netflix")
+
+
+def test_trailer_prefers_the_official_trailer(client, monkeypatch):
+    vids = [{"site": "YouTube", "key": "teaser", "type": "Teaser", "official": True, "iso_639_1": "en"},
+            {"site": "YouTube", "key": "fan", "type": "Trailer", "official": False, "iso_639_1": "en"},
+            {"site": "Vimeo", "key": "vimeo", "type": "Trailer", "official": True, "iso_639_1": "en"},
+            {"site": "YouTube", "key": "real", "type": "Trailer", "official": True, "iso_639_1": "en"}]
+    monkeypatch.setattr(A, "tmdb_get", lambda path, params=None, cache=True: {"results": vids if path == "/movie/5/videos" else []})
+    assert client.get("/api/trailer/5").get_json()["key"] == "real"
+    assert client.get("/api/trailer/6").status_code == 404

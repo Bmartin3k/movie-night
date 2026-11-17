@@ -48,6 +48,8 @@ RADARR_PROFILE = os.environ.get("RADARR_QUALITY_PROFILE", "").strip()   # name o
 RADARR_ROOT = os.environ.get("RADARR_ROOT_FOLDER", "").strip()          # path; default: the first one
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 JELLYFIN_URL = JELLYFIN_KEY = PLEX_URL = PLEX_TOKEN = ""     # set by apply_settings()
+STREAM_SERVICES, STREAM_REGION = [], "US"                     # set by apply_settings()
+SUGGEST_KEEP = 15      # picks shown under "Because you liked…"
 JELLYFIN_USERS, PLEX_USERS = [], []
 DISMISS_WEIGHT = 0.25 * (2 - 5.5)     # a dismissed pick pulls like a quarter of a 1★ (2/10) rating: -0.875
 
@@ -236,6 +238,8 @@ SETTINGS = [
     ("PLEX_URL", "URL", "plex", False),
     ("PLEX_TOKEN", "Token", "plex", True),
     ("PLEX_USERS", "Only these accounts (comma list; blank = all)", "plex", False),
+    ("STREAM_SERVICES", "Services you pay for (comma list, e.g. Netflix, Disney Plus)", "streaming", False),
+    ("STREAM_REGION", "Country code (blank = US)", "streaming", False),
 ]
 SETTING_KEYS = {k for k, *_ in SETTINGS}
 
@@ -304,7 +308,7 @@ def apply_settings(conn):
     """Load the effective values into the module globals the rest of the app reads (one gunicorn worker)."""
     global TMDB_KEY, ANTHROPIC_KEY, CLAUDE_MODEL, OMDB_KEY, RADARR_URL, RADARR_KEY, RADARR_PROFILE, RADARR_ROOT
     global EMBY_URL, EMBY_KEY, EMBY_USERS, _omdb_pause_until
-    global JELLYFIN_URL, JELLYFIN_KEY, JELLYFIN_USERS, PLEX_URL, PLEX_TOKEN, PLEX_USERS
+    global JELLYFIN_URL, JELLYFIN_KEY, JELLYFIN_USERS, PLEX_URL, PLEX_TOKEN, PLEX_USERS, STREAM_SERVICES, STREAM_REGION
     v = {k: setting(conn, k)[0] for k in SETTING_KEYS}
     TMDB_KEY, ANTHROPIC_KEY, OMDB_KEY = v["TMDB_API_KEY"], v["ANTHROPIC_API_KEY"], v["OMDB_API_KEY"]
     CLAUDE_MODEL = v["CLAUDE_MODEL"] or "claude-opus-5-5"
@@ -316,6 +320,8 @@ def apply_settings(conn):
     JELLYFIN_USERS = [u.strip().lower() for u in v["JELLYFIN_USERS"].split(",") if u.strip()]
     PLEX_URL, PLEX_TOKEN = v["PLEX_URL"].rstrip("/"), v["PLEX_TOKEN"]
     PLEX_USERS = [u.strip().lower() for u in v["PLEX_USERS"].split(",") if u.strip()]
+    STREAM_SERVICES = [x.strip() for x in v["STREAM_SERVICES"].split(",") if x.strip()]
+    STREAM_REGION = (v["STREAM_REGION"].strip().upper() or "US")[:2]
     _omdb_pause_until = 0.0
     _radarr_lib["at"] = 0
 
@@ -572,6 +578,65 @@ def radarr_state(m):
     return "wanted" if m.get("monitored") else "unmonitored"
 
 
+# ---------------------------------------------------------------- where to watch tonight
+# "In the library" = Radarr has the file (Emby/Jellyfin/Plex serve Radarr's folder). Streaming = TMDB's watch
+# providers (JustWatch data, cached a week like every TMDB call), counting only the services in Settings.
+def norm_provider(s):
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def provider_matches(service, provider_name):
+    """"Netflix" matches "Netflix" and "Netflix Standard with Ads"; "Prime Video" matches "Amazon Prime Video"."""
+    a, b = norm_provider(service), norm_provider(provider_name)
+    if not a:
+        return False
+    return a == b or (len(a) >= 4 and a in b) or b.startswith(a)
+
+
+def tonight_ready():
+    return bool(STREAM_SERVICES) or bool(RADARR_URL and RADARR_KEY)
+
+
+def library_states():
+    if not (RADARR_URL and RADARR_KEY):
+        return {}
+    try:
+        return radarr_library()
+    except RadarrError:
+        return {}
+
+
+def where_to_watch(tid, lib=None):
+    """-> {"library": bool, "stream": [the household's services that have it, by the names typed in Settings]}"""
+    lib = library_states() if lib is None else lib
+    out = {"library": lib.get(tid) == "downloaded", "stream": []}
+    if STREAM_SERVICES and tid:
+        try:
+            r = tmdb_get(f"/movie/{tid}/watch/providers").get("results", {}).get(STREAM_REGION, {})
+        except TMDBError:
+            r = {}
+        offers = [p.get("provider_name") for kind in ("flatrate", "free", "ads") for p in r.get(kind, [])]
+        out["stream"] = [s for s in STREAM_SERVICES if any(provider_matches(s, n) for n in offers)]
+    return out
+
+
+def only_watchable(items, keep):
+    """Annotate items with "where" and keep the first `keep` that are in the library or on one of our services."""
+    lib = library_states()
+    out = []
+    for i in range(0, len(items), 24):
+        batch = [it for it in items[i:i + 24] if it.get("tmdb_id")]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            wheres = list(pool.map(lambda it: where_to_watch(it["tmdb_id"], lib), batch))
+        for it, w in zip(batch, wheres):
+            it["where"] = w
+            if w["library"] or w["stream"]:
+                out.append(it)
+        if len(out) >= keep:
+            break
+    return out[:keep]
+
+
 # ---------------------------------------------------------------- Rotten Tomatoes (via OMDb)
 _omdb_pause_until = 0.0     # set when OMDb rejects the key or the daily limit is hit
 
@@ -781,6 +846,48 @@ def radarr_status():
     return jsonify({str(i): have.get(i) for i in ids})
 
 
+@app.get("/api/where")
+def where():
+    """?ids=603,550 -> {"603": {"library": true, "stream": ["Netflix"]}, ...}, or {} when nothing is set up."""
+    ids = [int(x) for x in request.args.get("ids", "").split(",") if x.strip().isdigit()][:100]
+    if not ids or not tonight_ready():
+        return jsonify({})
+    lib = library_states()
+    with ThreadPoolExecutor(8) as ex:
+        return jsonify({str(i): w for i, w in zip(ids, ex.map(lambda t: where_to_watch(t, lib), ids))})
+
+
+@app.get("/api/providers")
+def providers():
+    """Streaming services TMDB knows in our country, most popular first (for the Settings picker)."""
+    try:
+        d = tmdb_get("/watch/providers/movie", {"watch_region": STREAM_REGION})
+    except TMDBError as e:
+        return jsonify(error=str(e)), 502
+    rows = sorted(d.get("results", []), key=lambda p: (p.get("display_priorities", {}).get(STREAM_REGION, p.get("display_priority", 999))))
+    names = []
+    for p in rows:
+        n = p.get("provider_name")
+        if n and not any(provider_matches(x, n) for x in names):   # skip "Netflix basic with Ads" after "Netflix"
+            names.append(n)
+    return jsonify(names[:40])
+
+
+@app.get("/api/trailer/<int:tid>")
+def trailer(tid):
+    """-> {"key": YouTube id, "name"}: the official English trailer if there is one, else the best teaser/clip."""
+    try:
+        vids = [v for v in tmdb_get(f"/movie/{tid}/videos").get("results", []) if v.get("site") == "YouTube" and v.get("key")]
+    except TMDBError as e:
+        return jsonify(error=str(e)), 502
+    if not vids:
+        return jsonify(error="No trailer on TMDB for this one"), 404
+    best = min(vids, key=lambda v: (v.get("type") != "Trailer", v.get("type") not in ("Trailer", "Teaser"),
+                                    not v.get("official"), v.get("iso_639_1") not in ("en", None),
+                                    -(v.get("size") or 0)))
+    return jsonify(key=best["key"], name=best.get("name") or "Trailer")
+
+
 @app.post("/api/radarr/request")
 def radarr_request():
     """{"tmdb_id": 603}: add the movie to Radarr (monitored) and start a search. If Radarr already has it
@@ -827,7 +934,7 @@ def status():
     return jsonify(tmdb=bool(TMDB_KEY), claude=bool(ANTHROPIC_KEY),
                    emby=bool(EMBY_URL and EMBY_KEY), rt=bool(OMDB_KEY), radarr=bool(RADARR_URL and RADARR_KEY), emby_last_sync=json.loads(last[0]) if last else None,
                    media={src: media_configured(src) for src in MEDIA_SOURCES}, syncs=syncs,
-                   emby_pending=pending, last_backup=last_backup(), people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
+                   emby_pending=pending, last_backup=last_backup(), tonight=tonight_ready(), services=STREAM_SERVICES, people=conn.execute("SELECT COUNT(*) FROM people").fetchone()[0])
 
 
 # ---------------------------------------------------------------- settings password
@@ -1085,6 +1192,14 @@ def test_settings(service):
                 return jsonify(ok=False, message="Needs both a URL and a token")
             mc = plex_get("/")["MediaContainer"]
             msg = f"Connected to Plex {mc.get('version', '')} ({mc.get('friendlyName', '')})"
+        elif service == "streaming":
+            if not STREAM_SERVICES:
+                return jsonify(ok=False, message="Type the services you pay for, or pick them below")
+            d = tmdb_get("/watch/providers/movie", {"watch_region": STREAM_REGION}).get("results", [])
+            bad = [x for x in STREAM_SERVICES if not any(provider_matches(x, p.get("provider_name")) for p in d)]
+            if bad:
+                return jsonify(ok=False, message=f"TMDB doesn't know {', '.join(bad)} in {STREAM_REGION}. Pick from the list below.")
+            msg = f"All {len(STREAM_SERVICES)} recognised in {STREAM_REGION}"
         else:
             return jsonify(error="unknown service"), 404
     except anthropic.AuthenticationError:
@@ -1779,7 +1894,10 @@ def suggestions():
                 o["rt"], o["mc"] = s_["rt"], s_["mc"]
                 o["score"] = round(o["score"] * critic_factor(s_, strength), 2)
         out.sort(key=lambda x: x["score"], reverse=True)
-    return jsonify(apply_cert_limit(out, None, keep=90))
+    # "Watch tonight": only what's in the library or on a service we pay for, looked for among all 150
+    if request.args.get("tonight") == "1" and tonight_ready():
+        return jsonify(only_watchable(out, SUGGEST_KEEP))
+    return jsonify(out[:SUGGEST_KEEP])
 
 
 # ---------------------------------------------------------------- suggestions: Claude

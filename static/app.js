@@ -167,11 +167,12 @@ function suggestionCard(m, kind) {
   }
   if (m.rewatch?.length) why = seenLine(m.rewatch) + why;
   const score = m.vote_average ? `★ ${Number(m.vote_average).toFixed(1)}` : "";
+  const trailer = m.tmdb_id && state.status?.tmdb ? `<button data-act="trailer" title="Watch the trailer">▶ Trailer</button>` : "";
   const btns = kind === "watchlist"
-    ? `<button class="ok" data-act="watched">Watched it</button><button data-act="unsave" title="Take it off the watchlist for ${esc(groupLabel())}">Remove</button>
+    ? `<button class="ok" data-act="tonight" title="Mark ${esc(groupLabel())} as having watched it today, then rate it">🍿 We watched it</button>${trailer}<button data-act="unsave" title="Take it off the watchlist for ${esc(groupLabel())}">Remove</button>
        ${state.status?.radarr && m.tmdb_id ? `<button class="radarr" data-act="radarr" disabled>Radarr…</button>` : ""}`
     : `<button class="ok" data-act="watched" title="Already watched it? Add it to Watched with ratings">Already watched</button>
-       ${m.tmdb_id ? `<button data-act="save">${m.saved ? "★ Saved" : "☆ Save"}</button><button data-act="dismiss" title="Not interested">✕</button>` : ""}`;
+       ${m.tmdb_id ? `<button data-act="save">${m.saved ? "★ Saved" : "☆ Save"}</button>${trailer}<button data-act="dismiss" title="Not interested">✕</button>` : ""}`;
   return `<article class="card" data-tmdb="${m.tmdb_id ?? ""}">
     ${poster(m, score)}
     <div class="body">
@@ -758,15 +759,74 @@ function renderSuggestions() {
   $("#suggest-grid").innerHTML = unknown ? `<div class="spinner">Checking Rotten Tomatoes scores…</div>` : list.map((m) => suggestionCard(m)).join("");
   if (unknown) loadRT(all.map((m) => m.tmdb_id)).then(renderSuggestions);
   else fillRT($("#suggest-grid"));
+  fillWhere($("#suggest-grid"));
   const empty = $("#suggest-empty");
   if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key in ⚙ Settings to get these."; }
-  else if (state.suggestions && !state.suggestions.length) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
+  else if (state.suggestions && !state.suggestions.length && !tonightOn()) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
   else if (!unknown && all.length && !list.length && fresh) { empty.hidden = false; empty.textContent = "None of these are Fresh on Rotten Tomatoes. Turn off 🍅 Fresh only to see them all."; }
+  else if (state.suggestions && !all.length && tonightOn()) { empty.hidden = false; empty.textContent = `Nothing for ${groupLabel()} is in the library or on your services right now. Turn off 📺 Watch tonight to see everything.`; }
   else empty.hidden = true;
   const genres = [...new Set((state.suggestions || []).flatMap((m) => m.genres || []))].sort();
   $("#genre-filter").innerHTML = `<option value="">All genres</option>` + genres.map((x) => `<option ${x === g ? "selected" : ""}>${esc(x)}</option>`).join("");
 }
-function renderClaude() { $("#claude-grid").innerHTML = claudeResults.map((m) => suggestionCard(m)).join(""); fillRT($("#claude-grid")); }
+function renderClaude() { $("#claude-grid").innerHTML = claudeResults.map((m) => suggestionCard(m)).join(""); fillRT($("#claude-grid")); fillWhere($("#claude-grid")); }
+
+// ---------- watch tonight: in the library (Radarr has the file) or on a streaming service in Settings
+const whereCache = {};
+const tonightOn = () => !!(state.status?.tonight && state.tonight);
+function whereBadge(card, w) {
+  if (!w || card.querySelector(".where") || (!w.library && !w.stream?.length)) return;
+  const tags = [...(w.library ? [`<span class="lib" title="In your library">▶ Library</span>`] : []),
+    ...w.stream.map((n) => `<span title="Streaming on ${esc(n)}">${esc(n)}</span>`)];
+  card.querySelector(".poster")?.insertAdjacentHTML("beforeend", `<div class="where">${tags.join("")}</div>`);
+}
+async function loadWhere(ids) {
+  const need = [...new Set(ids.map(String).filter((id) => id && id !== "null" && !(id in whereCache)))];
+  for (let i = 0; i < need.length; i += 50) {
+    try { Object.assign(whereCache, await api(`/where?ids=${need.slice(i, i + 50).join(",")}`)); }
+    catch { /* badges are a nice-to-have */ }
+  }
+}
+async function fillWhere(grid) {
+  if (!state.status?.tonight || !grid) return;
+  const cards = () => grid.querySelectorAll(".card[data-tmdb]");
+  await loadWhere([...cards()].map((c) => c.dataset.tmdb));
+  cards().forEach((c) => whereBadge(c, whereCache[c.dataset.tmdb]));
+}
+function renderTonight() {
+  $$(".tonight-btn").forEach((b) => { b.hidden = !state.status?.tonight; b.setAttribute("aria-pressed", String(tonightOn())); });
+}
+state.tonight = lsGet("tonight") === "1";
+$$(".tonight-btn").forEach((b) => b.addEventListener("click", () => {
+  state.tonight = !state.tonight;
+  lsSet("tonight", state.tonight ? "1" : "");
+  renderTonight();
+  if (!$("#tab-suggest").hidden) loadSuggestions(true); else state.suggestionsKey = null;
+  loadWatchlist();
+}));
+
+// ---------- trailer
+const tdlg = $("#trailer-dialog");
+async function openTrailer(m) {
+  $("#trailer-title").textContent = `${m.title}${m.year ? ` (${m.year})` : ""}`;
+  $("#trailer-msg").textContent = "Finding the trailer…";
+  $("#trailer-iframe").src = "about:blank";
+  $("#trailer-yt").hidden = true;
+  tdlg.showModal();
+  try {
+    const t = await api(`/trailer/${m.tmdb_id}`);
+    $("#trailer-iframe").src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(t.key)}?autoplay=1&rel=0`;
+    $("#trailer-yt").href = `https://www.youtube.com/watch?v=${encodeURIComponent(t.key)}`;
+    $("#trailer-yt").hidden = false;
+    $("#trailer-msg").textContent = t.name;
+  } catch (err) {
+    $("#trailer-msg").textContent = err.message;
+    $("#trailer-yt").href = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${m.title} ${m.year || ""} trailer`)}`;
+    $("#trailer-yt").textContent = "Search YouTube"; $("#trailer-yt").hidden = false;
+  }
+}
+$("#trailer-close").addEventListener("click", () => tdlg.close());
+tdlg.addEventListener("close", () => { $("#trailer-iframe").src = "about:blank"; $("#trailer-yt").textContent = "Open on YouTube"; });
 
 // Rotten Tomatoes Tomatometer badges (OMDb), fetched after the cards are drawn so they never slow them down
 const rtCache = {};
@@ -802,10 +862,13 @@ const isFresh = (m) => parseInt(rtCache[m.tmdb_id]?.rt, 10) >= 60;
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();
-  const key = groupIds().join(",");
+  const key = groupIds().join(",") + (tonightOn() ? "&tonight=1" : "");
   if (state.suggestions && !force && state.suggestionsKey === key) return renderSuggestions();
-  $("#suggest-grid").innerHTML = `<div class="spinner">Finding movies for ${esc(groupLabel())}…</div>`;
-  try { state.suggestions = await api("/suggestions?people=" + key); state.suggestionsKey = key; }
+  $("#suggest-grid").innerHTML = `<div class="spinner">Finding movies for ${esc(groupLabel())}${tonightOn() ? " you can watch tonight" : ""}…</div>`;
+  try {
+    state.suggestions = await api("/suggestions?people=" + key); state.suggestionsKey = key;
+    state.suggestions.forEach((m) => { if (m.where && m.tmdb_id) whereCache[m.tmdb_id] = m.where; });
+  }
   catch (err) { state.suggestions = []; $("#suggest-empty").textContent = err.message; }
   renderSuggestions();
 }
@@ -883,9 +946,12 @@ async function onSuggestionClick(e) {
   const m = findSuggestion(tmdb, card.querySelector(".title").textContent);
   if (!m) return;
   try {
-    if (btn.dataset.act === "watched") {
+    if (btn.dataset.act === "watched" || btn.dataset.act === "tonight") {
       const existing = tmdb && state.movies.find((x) => x.tmdb_id === tmdb);
-      openDialog(existing || null, existing ? null : m);
+      openDialog(existing || null, existing ? null : m, null, true);
+      if (btn.dataset.act === "tonight") markJustWatched();
+    } else if (btn.dataset.act === "trailer") {
+      openTrailer(m);
     } else if (btn.dataset.act === "save") {
       if (m.saved) { await api(`/watchlist/${tmdb}?people=${groupIds().join(",")}`, { method: "DELETE" }); m.saved = false; }
       else {
@@ -938,12 +1004,22 @@ async function fillRadarr() {
   } catch (err) { btns.forEach((b) => { b.textContent = "Radarr unavailable"; b.title = err.message; }); }
 }
 async function loadWatchlist() {
+  renderTonight();
   state.watchlist = await api("/watchlist?people=" + groupIds().join(","));
-  $("#watchlist-grid").innerHTML = state.watchlist.map((m) => suggestionCard(m, "watchlist")).join("");
+  let list = state.watchlist;
+  if (tonightOn()) {
+    $("#watchlist-grid").innerHTML = `<div class="spinner">Checking what you can watch tonight…</div>`;
+    await loadWhere(list.map((m) => m.tmdb_id));
+    list = list.filter((m) => { const w = whereCache[m.tmdb_id]; return w && (w.library || w.stream?.length); });
+  }
+  $("#watchlist-grid").innerHTML = list.map((m) => suggestionCard(m, "watchlist")).join("");
   fillRT($("#watchlist-grid"));
+  fillWhere($("#watchlist-grid"));
   fillRadarr();
-  $("#watchlist-empty").hidden = state.watchlist.length > 0;
-  $("#watchlist-empty").innerHTML = `Nothing saved for ${esc(groupLabel())} that they haven't seen. Save suggestions here with <b>☆ Save</b>.`;
+  $("#watchlist-empty").hidden = list.length > 0;
+  $("#watchlist-empty").innerHTML = state.watchlist.length && tonightOn()
+    ? `None of ${esc(groupLabel())}'s ${state.watchlist.length} saved movies are in the library or on your services. Turn off <b>📺 Watch tonight</b>, or request one in Radarr.`
+    : `Nothing saved for ${esc(groupLabel())} that they haven't seen. Save suggestions here with <b>☆ Save</b>.`;
   $("#count-watchlist").textContent = state.watchlist.length || "";
 }
 
@@ -985,7 +1061,18 @@ function setPicked(m) {
     $("#picked-title").textContent = `${m.title}${m.year ? ` (${m.year})` : ""}`;
   }
 }
-function openDialog(movie, fromSuggestion, queueItem) {
+// 🍿 "We just watched it": everyone selected on Suggestions/Watchlist is marked Seen, dated today. Each person
+// can rate right here or later (it waits in their To rate). Nobody else is touched.
+function markJustWatched() {
+  for (const id of groupIds()) {
+    const d = state.draft[id];
+    if (!d || d.state === "none") state.draft[id] = { ...d, state: "seen", rating: null };
+  }
+  $("#m-date").value = new Date().toLocaleDateString("en-CA");
+  renderPersonRows();
+}
+$("#just-watched").addEventListener("click", markJustWatched);
+function openDialog(movie, fromSuggestion, queueItem, fromCard) {
   if (!state.people.length) { openPeople(); return; }
   if (!requireMe()) return;
   state.editing = movie || null;
@@ -1008,6 +1095,8 @@ function openDialog(movie, fromSuggestion, queueItem) {
   $("#picked").hidden = $("#picked").hidden || !!movie;
   $("#repick").hidden = !!movie || !!queueItem;
   $("#wrong-wrap").hidden = !(movie && movie.tmdb_id) && !queueItem;
+  $("#just-wrap").hidden = !fromCard;
+  $("#just-who").textContent = fromCard ? `marks ${groupLabel()} as seen, today` : "";
   renderPersonRows();
   dlg.showModal();
   if (!src && state.status.tmdb) $("#search").focus();
@@ -1128,7 +1217,7 @@ function showTab(name) {
 $$(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
 
 function renderAll() {
-  renderMe(); renderWatched(); renderQueue(); renderForChips();
+  renderMe(); renderWatched(); renderQueue(); renderForChips(); renderTonight();
   if (!$("#tab-suggest").hidden) loadSuggestions(false);
 }
 
@@ -1164,6 +1253,7 @@ const SERVICES = {
   emby: ["Emby", "Optional: imports played movies into To rate. Key: Dashboard → Advanced → API Keys.", ""],
   jellyfin: ["Jellyfin", "Optional: imports played movies into To rate. Key: Dashboard → API Keys → +. URL like http://192.168.1.50:8096", ""],
   plex: ["Plex", "Optional: imports every account's watch history (movies) into To rate. Use the server owner's token. URL like http://192.168.1.50:32400", "https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/"],
+  streaming: ["Streaming services (📺 Watch tonight)", "Optional: the services you pay for. Cards show where each movie streams, and 📺 Watch tonight keeps only those plus what Radarr has downloaded. Data from TMDB / JustWatch, refreshed weekly. Tap a service below to add or remove it.", ""],
 };
 let settingsList = [];
 const SRC_LABEL = { saved: "saved here", env: "from .env", "": "not set" };
@@ -1205,8 +1295,31 @@ function renderSettings() {
     return `<div class="set-svc" data-svc="${svc}">
       <h3>${esc(name)} <span class="spacer"></span><button type="button" class="ghost" data-test="${svc}">Test</button></h3>
       <div class="muted small note">${esc(note)} ${link ? `<a href="${link}" target="_blank" rel="noopener">${svc === "plex" ? "Find your token" : "Get a key"}</a>` : ""}</div>
-      ${fields}<div class="set-test"></div></div>`;
+      ${fields}${svc === "streaming" ? `<div class="chips prov-picks"></div>` : ""}<div class="set-test"></div></div>`;
   }).join("") + passwordSection();
+  fillProviders();
+}
+// streaming picker: TMDB's services for the country, tap to add/remove from the comma list
+let providerNames = null;
+async function fillProviders() {
+  const box = $(".prov-picks"), input = $('input[data-key="STREAM_SERVICES"]');
+  if (!box || !input || !state.status.tmdb) return;
+  try { providerNames ??= await api("/providers"); } catch { return; }
+  const paint = () => {
+    const on = new Set(input.value.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean));
+    box.innerHTML = providerNames.map((n) => `<button type="button" class="chip ${on.has(n.toLowerCase()) ? "on" : ""}" data-prov="${esc(n)}">${esc(n)}</button>`).join("");
+  };
+  paint();
+  input.addEventListener("input", paint);
+  box.onclick = (e) => {
+    const b = e.target.closest("[data-prov]");
+    if (!b) return;
+    const cur = input.value.split(",").map((x) => x.trim()).filter(Boolean);
+    const i = cur.findIndex((x) => x.toLowerCase() === b.dataset.prov.toLowerCase());
+    i >= 0 ? cur.splice(i, 1) : cur.push(b.dataset.prov);
+    input.value = cur.join(", ");
+    paint();
+  };
 }
 function settingsChanges() {
   const body = {};
