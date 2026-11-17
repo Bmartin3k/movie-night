@@ -678,3 +678,19 @@ def test_trailer_prefers_the_official_trailer(client, monkeypatch):
     monkeypatch.setattr(A, "tmdb_get", lambda path, params=None, cache=True: {"results": vids if path == "/movie/5/videos" else []})
     assert client.get("/api/trailer/5").get_json()["key"] == "real"
     assert client.get("/api/trailer/6").status_code == 404
+
+
+def test_library_icon_comes_from_the_media_server(client, monkeypatch):
+    class R:
+        ok, content, headers = True, b"PNG", {"content-type": "image/png"}
+    asked = []
+    monkeypatch.setattr(A, "EMBY_URL", "http://emby")
+    monkeypatch.setattr(A.requests, "get", lambda url, timeout=5: asked.append(url) or R())
+    A._lib_icon.update(at=0.0, img=None)
+    r = client.get("/api/library-icon")
+    assert r.status_code == 200 and r.data == b"PNG" and r.mimetype == "image/png"
+    client.get("/api/library-icon")
+    assert asked == ["http://emby/web/images/icon-72x72.png"]          # cached for a day
+    monkeypatch.setattr(A, "EMBY_URL", "")
+    A._lib_icon.update(at=0.0, img=None)
+    assert client.get("/api/library-icon").status_code == 404

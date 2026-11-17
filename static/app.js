@@ -773,10 +773,14 @@ function renderClaude() { $("#claude-grid").innerHTML = claudeResults.map((m) =>
 
 // ---------- watch tonight: in the library (Radarr has the file) or on a streaming service in Settings
 const whereCache = {};
+let libIcon = true;          // the media server's icon for "in the library"; ▶ if it can't be loaded
+fetch("/api/library-icon", { method: "HEAD" }).then((r) => { libIcon = r.ok; }).catch(() => { libIcon = false; });
 const tonightOn = () => !!(state.status?.tonight && state.tonight);
 function whereBadge(card, w) {
   if (!w || card.querySelector(".where") || (!w.library && !w.stream?.length)) return;
-  const tags = [...(w.library ? [`<span class="lib" title="In your library">▶</span>`] : []),
+  const lib = libIcon ? `<img src="/api/library-icon" alt="Library" title="In your library (downloaded by Radarr)" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'lib',textContent:'▶',title:this.title}))">`
+    : `<span class="lib" title="In your library (downloaded by Radarr)">▶</span>`;
+  const tags = [...(w.library ? [lib] : []),
     ...w.stream.map((n) => w.logos?.[n]
       ? `<img src="${IMG}w92${esc(w.logos[n])}" alt="${esc(n)}" title="Streaming on ${esc(n)}">`
       : `<span title="Streaming on ${esc(n)}">${esc(n)}</span>`)];

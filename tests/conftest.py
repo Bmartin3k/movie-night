@@ -26,6 +26,7 @@ def clean_db():
     conn.commit()
     conn.close()
     A._radarr_lib.update(at=0.0, states={})
+    A._lib_icon.update(at=0.0, img=None)
     A._omdb_pause_until = 0.0
     A._unlock_fails.update(n=0, until=0.0)
     A._pin_fails.clear()

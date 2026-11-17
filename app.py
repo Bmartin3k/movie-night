@@ -324,6 +324,7 @@ def apply_settings(conn):
     STREAM_REGION = (v["STREAM_REGION"].strip().upper() or "US")[:2]
     _omdb_pause_until = 0.0
     _radarr_lib["at"] = 0
+    _lib_icon["at"] = 0        # a new Emby/Jellyfin URL: fetch its icon again
 
 
 def merge_names(*lists):
@@ -859,6 +860,36 @@ def where():
     lib = library_states()
     with ThreadPoolExecutor(8) as ex:
         return jsonify({str(i): w for i, w in zip(ids, ex.map(lambda t: where_to_watch(t, lib), ids))})
+
+
+_lib_icon = {"at": 0.0, "img": None}
+
+
+@app.get("/api/library-icon")
+def library_icon():
+    """The household media server's own app icon (Emby, else Jellyfin), fetched server-side so an https page can
+    show it and the logo isn't copied into this repo. 404 = no icon; the page falls back to ▶."""
+    if time.time() - _lib_icon["at"] > 24 * 3600:
+        img = None
+        for base, paths in ((EMBY_URL, ("/web/images/icon-72x72.png", "/web/favicon.ico")),
+                            (JELLYFIN_URL, ("/web/touchicon.png", "/web/favicon.png", "/web/favicon.ico"))):
+            for path in paths if base else ():
+                try:
+                    r = requests.get(base + path, timeout=5)
+                except requests.RequestException:
+                    continue
+                if r.ok and r.headers.get("content-type", "").startswith("image/") and len(r.content) < 512 * 1024:
+                    img = (r.content, r.headers["content-type"].split(";")[0])
+                    break
+            if img:
+                break
+        _lib_icon.update(at=time.time(), img=img)
+    if not _lib_icon["img"]:
+        return jsonify(error="no media server icon"), 404
+    body, ctype = _lib_icon["img"]
+    resp = app.response_class(body, mimetype=ctype)
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 @app.get("/api/providers")

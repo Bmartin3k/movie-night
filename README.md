@@ -76,7 +76,7 @@ then get suggestions for one person or any group watching together.
   (monitored, with a search) using your first quality profile and root folder, or the ones set in `.env`.
 - **📺 Watch tonight** (Suggestions and Watchlist): only movies Radarr has downloaded or that stream on a service you
   pay for (pick them in ⚙ Settings → Streaming services; TMDB / JustWatch data, refreshed weekly). Every card shows where
-  it is: ▶ for the library, the service's logo for streaming. Every suggestion card has a **▶ Trailer** button (YouTube, from TMDB).
+  it is: your Emby (or Jellyfin) icon when Radarr has downloaded it, the service's logo for streaming. Every suggestion card has a **▶ Trailer** button (YouTube, from TMDB).
   Because you liked… shows the top 15.
 
 ## Set up
