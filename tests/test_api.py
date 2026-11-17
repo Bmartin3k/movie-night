@@ -588,3 +588,34 @@ def test_everyone_in_the_group_gets_an_equal_say(client, people, add_movie, fake
     got = {m["title"]: m["score"] for m in client.get(f"/api/suggestions?people={j},{s}").get_json()}
     assert got["Sam pick"] == max(got.values())        # his one favourite counts as much as her best
     assert len([t for t in got if t.startswith("Jane pick")]) == 40   # she gets her share of seeds (80 / 2)
+
+
+def test_claude_prompt_gives_everyone_an_equal_say(client, people, add_movie, monkeypatch):
+    j, s = people["Jane"], people["Sam"]
+    for i in range(60):                               # Jane has rated loads, Sam only a couple
+        add_movie(100 + i, f"Jane film {i}", {j: 10 if i < 30 else 6})
+    add_movie(1, "Sam fave", {s: 10})
+    add_movie(2, "Sam hate", {s: 2})
+    prompts = []
+
+    class Fake:
+        def __init__(self, **kw):
+            self.beta = self
+            self.messages = self
+
+        def create(self, **kw):
+            prompts.append(kw["messages"][0]["content"])
+            block = type("B", (), {"type": "text", "text": json.dumps({"suggestions": []})})
+            return type("R", (), {"stop_reason": "end_turn", "content": [block]})
+
+    monkeypatch.setattr(A, "ANTHROPIC_KEY", "x")
+    monkeypatch.setattr(A.anthropic, "Anthropic", Fake)
+    client.post("/api/claude-suggestions", json={"people": [j, s]})
+    rated, _, seen = prompts[0].partition("Also already seen by someone in the group")
+    assert "Sam fave" in rated and "Sam hate" in rated and "Sam 10/10" in rated
+    assert rated.count("Jane 10/10") == 30 and rated.count("Jane 6/10") == 10   # her share: 80 // 2 = 40, loves first
+    seen = seen.split("\n\n")[0]
+    assert seen.count("Jane film") == 20 and "Jane film 59" in seen
+    assert "equal say" in rated and "Jane 60, Sam 2" in rated
+    client.post("/api/claude-suggestions", json={"people": [j]})
+    assert "Also already seen" not in prompts[1] and prompts[1].count("— Jane ") == 60   # alone: everything

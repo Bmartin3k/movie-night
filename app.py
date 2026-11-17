@@ -1823,7 +1823,8 @@ watched and how they rated it. Ratings are per person, out of 10. Read the whole
 directors, eras and tones each person rates highly and poorly, and use their notes.
 
 When the picks are for several people watching together, find common ground: favour movies that fit
-what all of them enjoy, and avoid anything close to what one of them strongly disliked. When the picks
+what all of them enjoy, and avoid anything close to what one of them strongly disliked. Give each person
+an equal say, however many movies they've rated: no one person's taste should drive most of the picks. When the picks
 are for one person, tailor them to that person alone.
 
 Suggest real, released feature films that nobody in the group has seen (never anything from the
@@ -1849,11 +1850,29 @@ def claude_suggestions():
     by_movie = {}
     for r in rows:
         by_movie.setdefault(r["id"], {"tmdb_id": r["tmdb_id"], "title": r["title"], "year": r["year"], "w": []})["w"].append(r)
-    group_lines, elsewhere = [], []
-    for m in by_movie.values():
+    # seen by some of the group, 4½★+ from all of them, new to the rest: fair game (same rule as the watchlist)
+    rw = rewatchable(conn, group)
+    # Equal say: in a group, each person brings the same number of their strongest ratings (loves and
+    # hates), so someone with 900 ratings doesn't drown out someone with 30. The rest of what they've
+    # seen is still listed, titles only, so Claude knows not to suggest it.
+    shown = None
+    counts = {p: 0 for p in group}
+    if len(group) > 1:
+        per = max(20, 80 // len(group))
+        shown = set()
+        for pid in group:
+            mine = sorted(((w["rating"], mid) for mid, m in by_movie.items() for w in m["w"]
+                           if w["person_id"] == pid and w["rating"]), key=lambda x: (-abs(x[0] - 5.5), -x[0]))
+            counts[pid] = len(mine)
+            shown |= {mid for _, mid in mine[:per]}
+        shown |= {mid for mid, m in by_movie.items() if m["tmdb_id"] in rw}   # the exceptions stay visible
+    group_lines, elsewhere, also_seen = [], [], []
+    for mid, m in by_movie.items():
         label = f"- {m['title']}" + (f" ({m['year']})" if m["year"] else "")
         mine = [w for w in m["w"] if w["person_id"] in group]
-        if mine:
+        if mine and shown is not None and mid not in shown:
+            also_seen.append(label)
+        elif mine:
             parts = []
             for w in mine:
                 p = f"{names[w['person_id']]} " + (f"{w['rating']}/10" if w["rating"] else "seen, not rated")
@@ -1868,8 +1887,6 @@ def claude_suggestions():
     if not any("/10" in l for l in group_lines):
         return jsonify(error="Nobody in this group has rated anything yet"), 400
     who = [names[p] for p in group]
-    # seen by some of the group, 4½★+ from all of them, new to the rest: fair game (same rule as the watchlist)
-    rw = rewatchable(conn, group)
     movies = [{"title": m["title"], "year": m["year"]} for m in by_movie.values()
               if any(w["person_id"] in group for w in m["w"]) and m["tmdb_id"] not in rw]
     shareable = [m for m in by_movie.values() if m["tmdb_id"] in rw]
@@ -1883,6 +1900,19 @@ def claude_suggestions():
         prompt = (f"Suggest movies for {', '.join(who[:-1])} and {who[-1]} to watch together.\n\n"
                   "What they have watched, with each person's rating:\n")
     prompt += "\n".join(group_lines)
+    if shown is not None:
+        rated = [f"{names[p]} {counts[p]}" for p in group if counts[p]]
+        prompt += ("\n\nEveryone gets an equal say. The list above is each person's strongest ratings (their "
+                   "favourites and least favourites), the same number per person, even though they've rated very "
+                   "different amounts (" + ", ".join(rated) + "). Don't let one person's taste drive most of the "
+                   "picks: spread them so each person's favourites inspire about the same number, and prefer "
+                   "movies that fit several of them at once.")
+        unrated_people = [names[p] for p in group if not counts[p]]
+        if unrated_people:
+            prompt += (f" {', '.join(unrated_people)} {'hasn' if len(unrated_people) == 1 else 'haven'}'t rated "
+                       "anything yet, so just keep the picks suitable for them.")
+    if also_seen:
+        prompt += ("\n\nAlso already seen by someone in the group (don't suggest these):\n" + "\n".join(also_seen))
     if elsewhere:
         prompt += ("\n\nOther household members loved these, and nobody above has seen them (fair game):\n"
                    + "\n".join(elsewhere[:40]))
