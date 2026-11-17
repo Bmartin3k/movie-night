@@ -696,19 +696,10 @@ def group_limit(conn, group):
     return CERT_ORDER[min(ranks)] if ranks else None
 
 
-def apply_cert_limit(items, limit, keep=60, counts=None):
+def apply_cert_limit(items, limit, keep=60):
     """Annotate items with their US rating; when there is a limit, drop anything above it or unrated.
-    Checks in rank order and stops once `keep` items have passed. With `counts`, only items it's true for
-    count toward `keep` (the others ride along where they rank)."""
-    counts = counts or (lambda it: True)
-
-    def first(lst):             # lst up to and including the keep-th counted item
-        n = 0
-        for i, it in enumerate(lst):
-            n += bool(counts(it))
-            if n == keep:
-                return lst[:i + 1]
-        return lst
+    Checks in rank order and stops once `keep` items have passed."""
+    first = lambda lst: lst[:keep]
 
     if not limit:
         return first(items)
@@ -722,8 +713,8 @@ def apply_cert_limit(items, limit, keep=60, counts=None):
             it["cert"] = c
             if c in allowed:
                 out.append(it)
-        checked += sum(bool(counts(it)) for it in batch)
-        if sum(bool(counts(it)) for it in out) >= keep or checked >= 264:   # don't fan out forever
+        checked += len(batch)
+        if len(out) >= keep or checked >= 264:   # don't fan out forever
             break
     return first(out)
 
@@ -1636,9 +1627,9 @@ def suggestions():
     popularity/quality term breaks ties. Movies someone *outside* the group loved that nobody in the
     group has seen are boosted too ("Ben loved this").
 
-    ?watched=1 also returns seen picks that everyone in the group who rated them gave 4½★+ (9/10), tagged
-    "seen_by" / "five_by" (names), mixed in
-    where they rank; the unseen picks are (practically) the same as without it.
+    A movie is suggested while at least one person in the group hasn't seen it: Blake alone never gets one
+    he's seen, but Blake + Dexi do when Dexi hasn't. Those picks carry "seen_by" ([{name, rating}], rating
+    None when seen but not rated). Seen by someone unlinked ("someone") counts as seen by everyone, to be safe.
     """
     if not TMDB_KEY:
         return jsonify(error="TMDB_API_KEY is not set"), 503
@@ -1656,16 +1647,15 @@ def suggestions():
     if not seeds:
         return jsonify([])
     seen = seen_by(conn, group)
-    show_seen = request.args.get("watched") == "1"
-    # with ?watched=1, seen movies come back when everyone in the group who RATED them gave 4½★+ (9/10);
-    # people who haven't rated it don't count against it
+    everyone = {names[p] for p in group}
+    # seen by the whole group (or by someone unlinked): nobody here is new to it, so it's not suggested
+    seen_all = {t for t, who in seen.items() if "someone" in who or who >= everyone}
     rated = {}
     for r in conn.execute("SELECT m.tmdb_id, w.person_id, w.rating FROM movies m JOIN watches w ON w.movie_id=m.id "
                           "WHERE m.tmdb_id IS NOT NULL AND w.rating IS NOT NULL"):
         if r[1] in group:
-            rated.setdefault(r[0], []).append((names[r[1]], r[2]))
-    fives = {t: sorted(n for n, _ in rs) for t, rs in rated.items() if all(v >= 9 for _, v in rs)}
-    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | (set(seen) - set(fives) if show_seen else set(seen))
+            rated.setdefault(r[0], {})[names[r[1]]] = r[2]
+    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | seen_all
     # already on the group's watchlist (saved for anyone selected, same as the Watchlist tab shows): not suggested again
     skip |= {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
 
@@ -1775,14 +1765,13 @@ def suggestions():
         item["loved_by"] = [{"name": n, "rating": rt} for n, rt in e["fans"]]
     for o in out:
         if o["tmdb_id"] in seen:
-            o["seen_by"] = sorted(seen[o["tmdb_id"]], key=lambda n: (n == "someone", n))
-            o["five_by"] = sorted(fives.get(o["tmdb_id"], []))
+            r = rated.get(o["tmdb_id"], {})
+            o["seen_by"] = [{"name": n, "rating": r.get(n)} for n in sorted(seen[o["tmdb_id"]])]
     out.sort(key=lambda x: x["score"], reverse=True)
     # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
     # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
     limit = group_limit(conn, group)
-    unseen = lambda o: "seen_by" not in o      # with ?watched=1, seen picks ride along where they rank
-    out = apply_cert_limit(out, limit, keep=150, counts=unseen)
+    out = apply_cert_limit(out, limit, keep=150)
     if OMDB_KEY:
         strength = 0.5 if limit else 1.0          # half the boost when a kid is in the group
         top = [o for o in out if o.get("tmdb_id")]
@@ -1793,7 +1782,7 @@ def suggestions():
                 o["rt"], o["mc"] = s_["rt"], s_["mc"]
                 o["score"] = round(o["score"] * critic_factor(s_, strength), 2)
         out.sort(key=lambda x: x["score"], reverse=True)
-    return jsonify(apply_cert_limit(out, None, keep=90, counts=unseen))
+    return jsonify(apply_cert_limit(out, None, keep=90))
 
 
 # ---------------------------------------------------------------- suggestions: Claude

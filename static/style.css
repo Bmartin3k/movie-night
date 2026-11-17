@@ -86,7 +86,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   position: absolute; bottom: .4rem; left: .4rem; background: rgba(0,0,0,.75); color: #fff;
   border-radius: 6px; padding: .1rem .4rem; font-weight: 700; font-size: .8rem;
 }
-#fresh-only[aria-pressed="true"], #show-watched[aria-pressed="true"] { background: var(--accent); color: #111; border-color: var(--accent); }
+#fresh-only[aria-pressed="true"] { background: var(--accent); color: #111; border-color: var(--accent); }
 .card .rt .mc { display: inline-block; min-width: 1.6em; text-align: center; border-radius: 4px; padding: 0 .25rem; margin-left: .15rem; color: #fff; }
 .card .rt .mc.good { background: #00ce7a; color: #111; }
 .card .rt .mc.mixed { background: #ffbd3f; color: #111; }
@@ -255,7 +255,6 @@ button.link { background: none; border: 0; padding: .2rem 0; color: inherit; opa
 .card .btns button.radarr { flex-basis: 100%; }
 .card .btns button.radarr[data-state="downloaded"] { color: #00ce7a; }
 .card .seen-by { color: var(--accent); font-size: .8rem; font-weight: 600; }
-.card.seen-pick .poster { opacity: .55; }
 #settings-dialog { width: min(600px, calc(100vw - 32px)); }
 .set-svc { border-top: 1px solid var(--border); padding-top: .7rem; margin-top: .9rem; }
 .set-svc h3 { font-size: .95rem; margin: 0; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
