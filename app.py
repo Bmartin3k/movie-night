@@ -1966,9 +1966,8 @@ what all of them enjoy, and avoid anything close to what one of them strongly di
 an equal say, however many movies they've rated: no one person's taste should drive most of the picks. When the picks
 are for one person, tailor them to that person alone.
 
-Suggest real, released feature films that at least one person in the group hasn't seen. Never suggest
-anything from the "don't suggest" lists, or anything in the ratings list unless it's marked [new to ...]:
-those are fair game for the people named, and the reason should say who has already seen it. Movies another household member loved are fair game if the group hasn't seen
+Suggest real, released feature films that nobody in the group has seen. Never suggest anything in the
+ratings list or the "don't suggest" lists. Movies another household member loved are fair game if the group hasn't seen
 them. Mix a few well-known picks with a few less obvious ones. Each reason is one or two sentences
 addressed to the group, naming the people and the specific movies on their lists it connects to."""
 
@@ -1989,8 +1988,8 @@ def claude_suggestions():
     by_movie = {}
     for r in rows:
         by_movie.setdefault(r["id"], {"tmdb_id": r["tmdb_id"], "title": r["title"], "year": r["year"], "w": []})["w"].append(r)
-    # seen by some of the group, new to the rest, nobody here rated it under 2★: fair game (same rule everywhere)
-    rw = rewatchable(conn, group)
+    # Unlike Suggestions and the Watchlist, Claude only picks movies NOBODY in the group has seen (user's choice,
+    # 2026-11-17): anything one of them has watched is listed as seen and filtered out.
     # Equal say: in a group, each person brings the same number of their strongest ratings (loves and
     # hates), so someone with 900 ratings doesn't drown out someone with 30. The rest of what they've
     # seen is still listed, titles only, so Claude knows not to suggest it.
@@ -2009,8 +2008,7 @@ def claude_suggestions():
         label = f"- {m['title']}" + (f" ({m['year']})" if m["year"] else "")
         mine = [w for w in m["w"] if w["person_id"] in group]
         if mine and shown is not None and mid not in shown:
-            if m["tmdb_id"] not in rw:            # left out but shareable: fair game, no need to list it
-                also_seen.append(label)
+            also_seen.append(label)
         elif mine:
             parts = []
             for w in mine:
@@ -2018,9 +2016,7 @@ def claude_suggestions():
                 if w["notes"]:
                     p += f' ("{w["notes"]}")'
                 parts.append(p)
-            new_to = [n for n in (names[p] for p in group) if m["tmdb_id"] in rw
-                      and n not in {x["name"] for x in rw[m["tmdb_id"]]}]
-            group_lines.append(label + " — " + "; ".join(parts) + (f" [new to {', '.join(new_to)}]" if new_to else ""))
+            group_lines.append(label + " — " + "; ".join(parts))
         else:
             fans = [f"{names[w['person_id']]} {w['rating']}/10" for w in m["w"] if (w["rating"] or 0) >= 8]
             if fans:
@@ -2029,7 +2025,7 @@ def claude_suggestions():
         return jsonify(error="Nobody in this group has rated anything yet"), 400
     who = [names[p] for p in group]
     movies = [{"title": m["title"], "year": m["year"]} for m in by_movie.values()
-              if any(w["person_id"] in group for w in m["w"]) and m["tmdb_id"] not in rw]
+              if any(w["person_id"] in group for w in m["w"])]
     dismissed = conn.execute("SELECT title FROM dismissed WHERE title IS NOT NULL").fetchall()
     for_them = {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
     saved = [r for r in conn.execute("SELECT tmdb_id, title, year FROM watchlist") if r["tmdb_id"] in for_them]
@@ -2052,14 +2048,10 @@ def claude_suggestions():
             prompt += (f" {', '.join(unrated_people)} {'hasn' if len(unrated_people) == 1 else 'haven'}'t rated "
                        "anything yet, so just keep the picks suitable for them.")
     if also_seen:
-        prompt += ("\n\nAlso seen, by everyone here or rated under 2★ by someone here (don't suggest these):\n" + "\n".join(also_seen))
+        prompt += ("\n\nAlso seen by someone here (don't suggest these):\n" + "\n".join(also_seen))
     if elsewhere:
         prompt += ("\n\nOther household members loved these, and nobody above has seen them (fair game):\n"
                    + "\n".join(elsewhere[:40]))
-    if rw:
-        prompt += ("\n\nA movie only some of the group have seen is fair game for the others, unless someone in the "
-                   "group rated it under 2★ (below 4/10). In the list above those are marked [new to ...]; anything "
-                   "there without the mark, everyone has seen or someone disliked: don't suggest it.")
     if dismissed:
         prompt += ("\n\nThe household marked these \"not interested\". Don't suggest them, and lean away from "
                    "movies very like them:\n" + "\n".join(f"- {r['title']}" for r in dismissed))
@@ -2070,7 +2062,7 @@ def claude_suggestions():
     dec, cut = declined_map(conn), age_cutoffs(conn)
     for r in conn.execute("SELECT tmdb_id, title, year, watched_by, watched_on FROM emby_queue ORDER BY watched_on DESC LIMIT 400"):
         ids, unknown, credited = queue_watchers(conn, r["watched_by"], r["tmdb_id"], dec, r["watched_on"], cut)
-        if (unknown or not credited or ids & set(group)) and r["tmdb_id"] not in rw:
+        if unknown or not credited or ids & set(group):
             unrated.append(r)
     if unrated:
         prompt += "\n\nAlso already watched, not rated yet (don't suggest these):\n" + "\n".join(
@@ -2117,7 +2109,7 @@ def claude_suggestions():
         return jsonify(error="Claude's answer couldn't be read" + (" (cut off)" if resp.stop_reason == "max_tokens" else "")), 502
 
     # Match each pick to TMDB for posters / ids, and drop anything already watched.
-    skip = excluded_ids(conn, group) - set(rw)
+    skip = excluded_ids(conn, group)
     watched_titles = {(m["title"].lower(), m["year"]) for m in [*movies, *unrated]}
     genres = genre_map() if TMDB_KEY else {}
 
@@ -2141,9 +2133,6 @@ def claude_suggestions():
     out = [i for i in items      # also drop anything already on the group's watchlist, in case Claude ignored that
            if not (i["tmdb_id"] and (i["tmdb_id"] in skip or i["tmdb_id"] in for_them))
            and (i["title"].lower(), i["year"]) not in watched_titles]
-    for i in out:
-        if i["tmdb_id"] in rw:
-            i["rewatch"] = rw[i["tmdb_id"]]
     if limit and TMDB_KEY:   # double-check Claude against the real ratings
         out = apply_cert_limit(out, limit, keep=len(out))
     return jsonify(out)

@@ -363,7 +363,7 @@ def test_suggests_what_someone_in_the_group_hasnt_seen(client, people, add_movie
 
 
 # ---------------------------------------------------------------- Ask Claude (API faked)
-def test_claude_picks_follow_the_shared_seen_rule(client, people, add_movie, monkeypatch):
+def test_claude_only_picks_what_nobody_in_the_group_has_seen(client, people, add_movie, monkeypatch):
     j, s = people["Jane"], people["Sam"]
     add_movie(1, "Loved by Jane", {j: 9})
     add_movie(2, "Jane hated it", {j: 3})
@@ -395,10 +395,9 @@ def test_claude_picks_follow_the_shared_seen_rule(client, people, add_movie, mon
     monkeypatch.setattr(A, "TMDB_KEY", "test")
     monkeypatch.setattr(A, "tmdb_get", tmdb_get)
     got = {m["title"]: m for m in client.post("/api/claude-suggestions", json={"people": [j, s]}).get_json()}
-    assert set(got) == {"Loved by Jane", "New one"}
-    assert got["Loved by Jane"]["rewatch"] == [{"name": "Jane", "rating": 9}]
-    assert "Loved by Jane (2020) — Jane 9/10 [new to Sam]" in prompts[0]
-    assert "Jane hated it (2020) — Jane 3/10\n" in prompts[0]     # no mark: off limits
+    assert set(got) == {"New one"}                  # new to Sam isn't enough: Jane has seen it
+    assert "rewatch" not in got["New one"]
+    assert "Loved by Jane (2020) — Jane 9/10\n" in prompts[0] and "[new to" not in prompts[0]
     got = {m["title"] for m in client.post("/api/claude-suggestions", json={"people": [j]}).get_json()}
     assert got == {"New one"}                       # Jane alone: nothing she's seen
 
@@ -619,9 +618,9 @@ def test_claude_prompt_gives_everyone_an_equal_say(client, people, add_movie, mo
     rated = prompts[0]
     assert "Sam fave" in rated and "Sam hate" in rated and "Sam 10/10" in rated
     assert rated.count("Jane 10/10") == 30 and rated.count("Jane 6/10") == 10   # her share: 80 // 2 = 40, loves first
-    # Jane's other 20 are new to Sam, so fair game: not listed at all (and the 40 shown are marked)
-    assert "Jane film 59" not in rated and "Also seen" not in rated and rated.count("[new to Sam]") == 40
-    assert "Sam hate (2020) — Sam 2/10\n" in rated                                # under 2★: no mark
+    # Jane's other 20 are listed by title as seen: Claude only picks what nobody in the group has seen
+    assert "Also seen by someone here" in rated and "- Jane film 59 (2020)" in rated and "[new to" not in rated
+    assert "Sam hate (2020) — Sam 2/10\n" in rated
     assert "equal say" in rated and "Jane 60, Sam 2" in rated
     add_movie(50, "Both saw", {j: 5, s: 5})
     client.post("/api/claude-suggestions", json={"people": [j]})

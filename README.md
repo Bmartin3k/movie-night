@@ -15,7 +15,7 @@ then get suggestions for one person or any group watching together.
   "Rated by me / Needs my rating / I haven't seen"; sort by my rating or family average. Click a card to
   rate it for anyone (one row of stars per person; everyone starts as "Not watched").
 - **Suggestions**
-  - Pick **who it's for**: Everyone, one person, or any mix. A movie is suggested as long as at least one person in the group hasn't seen it, and the card says who has (with their rating): on your own you never get one you've seen, but add a kid who hasn't and it can show up. Anything someone in the group rated under 2★ stays out. *Ask Claude* and the Watchlist follow the same rule.
+  - Pick **who it's for**: Everyone, one person, or any mix. A movie is suggested as long as at least one person in the group hasn't seen it, and the card says who has (with their rating): on your own you never get one you've seen, but add a kid who hasn't and it can show up. Anything someone in the group rated under 2★ stays out. The Watchlist follows the same rule. *Ask Claude* is stricter: it only picks movies nobody selected has seen.
   - *Because you liked…*: TMDB recommendations of every movie the group rated, weighted by the group's
     **average** rating (4+★ pulls up, 2.5★ and under pushes down, so one person's dislike counts against it).
     TMDB's "similar movies" add more candidates. They're looser matches, so each counts for half and only once,
