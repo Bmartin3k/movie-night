@@ -1451,8 +1451,8 @@ def rematch_queued(emby_id):
 def get_watchlist():
     """The watchlist for the people selected (?people=1,4; empty = everyone): movies saved for anyone in
     the group that someone in it still hasn't seen, and (with a kid in the group) nothing over the kid's
-    rating limit. Someone in the group who has seen it keeps it on only if they rated it 4½★+ (9/10):
-    they'd watch it again. Seen without a rating, or skipped, takes it off. Without ?people it returns
+    rating limit. Someone in the group who has seen it keeps it on unless they rated it under 2★
+    (rewatchable()). Without ?people it returns
     everything."""
     conn = db()
     names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people")}
@@ -1595,9 +1595,10 @@ def excluded_ids(conn, group=None):
 
 
 def rewatchable(conn, group, seen=None):
-    """{tmdb_id: [{"name", "rating"}]}: movies some of `group` have seen and all of those rated 4½★+ (9/10),
-    while someone else in the group is still new to them, so they can be shared. Seen without a rating,
-    skipped, or seen by someone unlinked ("someone") doesn't qualify."""
+    """{tmdb_id: [{"name", "rating"}]}: movies some of `group` have seen while someone else in it is still new
+    to them, so they can be shared, unless one of those who saw it rated it under 2★ (SEEN_LOW). Seen without
+    a rating or skipped is fine (rating None). Seen by someone unlinked ("someone") doesn't qualify: it might
+    have been anyone. Used by Suggestions, Ask Claude and the Watchlist alike."""
     names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people")}
     everyone = {names[p] for p in group}
     seen = seen if seen is not None else seen_by(conn, group)
@@ -1609,15 +1610,15 @@ def rewatchable(conn, group, seen=None):
     out = {}
     for tid, who in seen.items():
         r = rated.get(tid, {})
-        if "someone" not in who and not who >= everyone and all((r.get(n) or 0) >= 9 for n in who):
-            out[tid] = [{"name": n, "rating": r[n]} for n in sorted(who)]
+        if "someone" not in who and not who >= everyone and all(v >= SEEN_LOW for v in r.values()):
+            out[tid] = [{"name": n, "rating": r.get(n)} for n in sorted(who)]
     return out
 
 
-# ---------------------------------------------------------------- suggestions: TMDB
 SEEN_LOW = 4      # 2★ out of 10: a movie someone in the group rated lower isn't suggested to the rest of them
 
 
+# ---------------------------------------------------------------- suggestions: TMDB
 @app.get("/api/suggestions")
 def suggestions():
     """Score every TMDB recommendation and "similar movie" of every movie the group rated.
@@ -1650,17 +1651,9 @@ def suggestions():
     if not seeds:
         return jsonify([])
     seen = seen_by(conn, group)
-    everyone = {names[p] for p in group}
-    # seen by the whole group (or by someone unlinked): nobody here is new to it, so it's not suggested
-    seen_all = {t for t, who in seen.items() if "someone" in who or who >= everyone}
-    rated = {}
-    for r in conn.execute("SELECT m.tmdb_id, w.person_id, w.rating FROM movies m JOIN watches w ON w.movie_id=m.id "
-                          "WHERE m.tmdb_id IS NOT NULL AND w.rating IS NOT NULL"):
-        if r[1] in group:
-            rated.setdefault(r[0], {})[names[r[1]]] = r[2]
-    # someone here who's seen it rated it under 2★: not worth putting the others through it
-    disliked = {t for t, r in rated.items() if any(v < SEEN_LOW for v in r.values())}
-    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | seen_all | disliked
+    # seen by some of the group but new to someone else in it, and nobody here rated it under 2★: fair game
+    rw = rewatchable(conn, group, seen)
+    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | (set(seen) - set(rw))
     # already on the group's watchlist (saved for anyone selected, same as the Watchlist tab shows): not suggested again
     skip |= {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
 
@@ -1769,9 +1762,8 @@ def suggestions():
         item["score"] = round(item["score"] + (best - 5.5) * 1.5 * (0.5 if group_limit(conn, group) else 1), 2)
         item["loved_by"] = [{"name": n, "rating": rt} for n, rt in e["fans"]]
     for o in out:
-        if o["tmdb_id"] in seen:
-            r = rated.get(o["tmdb_id"], {})
-            o["seen_by"] = [{"name": n, "rating": r.get(n)} for n in sorted(seen[o["tmdb_id"]])]
+        if o["tmdb_id"] in rw:
+            o["seen_by"] = rw[o["tmdb_id"]]
     out.sort(key=lambda x: x["score"], reverse=True)
     # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
     # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
@@ -1821,9 +1813,9 @@ what all of them enjoy, and avoid anything close to what one of them strongly di
 an equal say, however many movies they've rated: no one person's taste should drive most of the picks. When the picks
 are for one person, tailor them to that person alone.
 
-Suggest real, released feature films that nobody in the group has seen (never anything from the
-watched or excluded lists), except movies the prompt lists as exceptions: ones some of the group loved
-and the rest haven't seen. Movies another household member loved are fair game if the group hasn't seen
+Suggest real, released feature films that at least one person in the group hasn't seen. Never suggest
+anything from the "don't suggest" lists, or anything in the ratings list unless it's marked [new to ...]:
+those are fair game for the people named, and the reason should say who has already seen it. Movies another household member loved are fair game if the group hasn't seen
 them. Mix a few well-known picks with a few less obvious ones. Each reason is one or two sentences
 addressed to the group, naming the people and the specific movies on their lists it connects to."""
 
@@ -1844,7 +1836,7 @@ def claude_suggestions():
     by_movie = {}
     for r in rows:
         by_movie.setdefault(r["id"], {"tmdb_id": r["tmdb_id"], "title": r["title"], "year": r["year"], "w": []})["w"].append(r)
-    # seen by some of the group, 4½★+ from all of them, new to the rest: fair game (same rule as the watchlist)
+    # seen by some of the group, new to the rest, nobody here rated it under 2★: fair game (same rule everywhere)
     rw = rewatchable(conn, group)
     # Equal say: in a group, each person brings the same number of their strongest ratings (loves and
     # hates), so someone with 900 ratings doesn't drown out someone with 30. The rest of what they've
@@ -1859,13 +1851,13 @@ def claude_suggestions():
                            if w["person_id"] == pid and w["rating"]), key=lambda x: (-abs(x[0] - 5.5), -x[0]))
             counts[pid] = len(mine)
             shown |= {mid for _, mid in mine[:per]}
-        shown |= {mid for mid, m in by_movie.items() if m["tmdb_id"] in rw}   # the exceptions stay visible
     group_lines, elsewhere, also_seen = [], [], []
     for mid, m in by_movie.items():
         label = f"- {m['title']}" + (f" ({m['year']})" if m["year"] else "")
         mine = [w for w in m["w"] if w["person_id"] in group]
         if mine and shown is not None and mid not in shown:
-            also_seen.append(label)
+            if m["tmdb_id"] not in rw:            # left out but shareable: fair game, no need to list it
+                also_seen.append(label)
         elif mine:
             parts = []
             for w in mine:
@@ -1873,7 +1865,9 @@ def claude_suggestions():
                 if w["notes"]:
                     p += f' ("{w["notes"]}")'
                 parts.append(p)
-            group_lines.append(label + " — " + "; ".join(parts))
+            new_to = [n for n in (names[p] for p in group) if m["tmdb_id"] in rw
+                      and n not in {x["name"] for x in rw[m["tmdb_id"]]}]
+            group_lines.append(label + " — " + "; ".join(parts) + (f" [new to {', '.join(new_to)}]" if new_to else ""))
         else:
             fans = [f"{names[w['person_id']]} {w['rating']}/10" for w in m["w"] if (w["rating"] or 0) >= 8]
             if fans:
@@ -1883,7 +1877,6 @@ def claude_suggestions():
     who = [names[p] for p in group]
     movies = [{"title": m["title"], "year": m["year"]} for m in by_movie.values()
               if any(w["person_id"] in group for w in m["w"]) and m["tmdb_id"] not in rw]
-    shareable = [m for m in by_movie.values() if m["tmdb_id"] in rw]
     dismissed = conn.execute("SELECT title FROM dismissed WHERE title IS NOT NULL").fetchall()
     for_them = {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
     saved = [r for r in conn.execute("SELECT tmdb_id, title, year FROM watchlist") if r["tmdb_id"] in for_them]
@@ -1906,16 +1899,14 @@ def claude_suggestions():
             prompt += (f" {', '.join(unrated_people)} {'hasn' if len(unrated_people) == 1 else 'haven'}'t rated "
                        "anything yet, so just keep the picks suitable for them.")
     if also_seen:
-        prompt += ("\n\nAlso already seen by someone in the group (don't suggest these):\n" + "\n".join(also_seen))
+        prompt += ("\n\nAlso seen, by everyone here or rated under 2★ by someone here (don't suggest these):\n" + "\n".join(also_seen))
     if elsewhere:
         prompt += ("\n\nOther household members loved these, and nobody above has seen them (fair game):\n"
                    + "\n".join(elsewhere[:40]))
-    if shareable:
-        prompt += ("\n\nException: these are on the list above, but only some of the group have seen them, and those "
-                   "people rated them 4½★ or higher (they'd happily watch again). They're fair game to suggest for the "
-                   "others; say who loved it:\n" + "\n".join(
-                       f"- {m['title']}" + (f" ({m['year']})" if m["year"] else "") + " — new to "
-                       + ", ".join(n for n in who if n not in {x["name"] for x in rw[m["tmdb_id"]]}) for m in shareable))
+    if rw:
+        prompt += ("\n\nA movie only some of the group have seen is fair game for the others, unless someone in the "
+                   "group rated it under 2★ (below 4/10). In the list above those are marked [new to ...]; anything "
+                   "there without the mark, everyone has seen or someone disliked: don't suggest it.")
     if dismissed:
         prompt += ("\n\nThe household marked these \"not interested\". Don't suggest them, and lean away from "
                    "movies very like them:\n" + "\n".join(f"- {r['title']}" for r in dismissed))
@@ -1926,7 +1917,7 @@ def claude_suggestions():
     dec, cut = declined_map(conn), age_cutoffs(conn)
     for r in conn.execute("SELECT tmdb_id, title, year, watched_by, watched_on FROM emby_queue ORDER BY watched_on DESC LIMIT 400"):
         ids, unknown, credited = queue_watchers(conn, r["watched_by"], r["tmdb_id"], dec, r["watched_on"], cut)
-        if unknown or not credited or ids & set(group):
+        if (unknown or not credited or ids & set(group)) and r["tmdb_id"] not in rw:
             unrated.append(r)
     if unrated:
         prompt += "\n\nAlso already watched, not rated yet (don't suggest these):\n" + "\n".join(

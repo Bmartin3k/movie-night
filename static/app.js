@@ -150,20 +150,22 @@ function watchedCard(m) {
     </div></article>`;
 }
 
+// who in the group has already seen a pick that's still new to someone else, and how they rated it
+const seenLine = (who) => `<div class="seen-by">✓ ${who.map((r) => r.rating ? `${esc(r.name)} rated it ${fmtR(r.rating)}` : `${esc(r.name)} has seen it`).join(", ")}</div>`;
 function suggestionCard(m, kind) {
   let why = "";
   if (m.reason) why = `<div class="why">${esc(m.reason)}</div>`;
   if (kind === "watchlist" && m.saved_for_names?.length)
     why = `<div class="loved">Saved for ${m.saved_for_names.length === state.people.length && state.people.length > 1 ? "everyone" : m.saved_for_names.map(esc).join(", ")}</div>` + why;
   else {
-    if (m.seen_by?.length) why += `<div class="seen-by">✓ ${m.seen_by.map((r) => r.rating ? `${esc(r.name)} rated it ${fmtR(r.rating)}` : `${esc(r.name)} has seen it`).join(", ")}</div>`;
+    if (m.seen_by?.length) why += seenLine(m.seen_by);
     if (m.loved_by) why += `<div class="loved">${m.loved_by.map((l) => `${esc(l.name)} rated it ${fmtR(l.rating)}`).join(", ")}</div>`;
     if (m.because && m.because.length) {
       const multi = groupIds().length > 1;
       why += `<div class="why">Because of ${m.because.map((b) => `<b>${esc(b.title)}</b> (${multi && b.raters > 1 ? `avg ${(b.avg / 2).toFixed(1).replace(/\.0$/, "")}★` : b.fans && b.fans.length ? b.fans.map(esc).join(", ") : `${(b.avg / 2).toFixed(1).replace(/\.0$/, "")}★`})`).join(", ")}</div>`;
     }
   }
-  if (m.rewatch?.length) why = `<div class="seen-by">✓ ${m.rewatch.map((r) => `${esc(r.name)} rated it ${fmtR(r.rating)}`).join(", ")}</div>` + why;
+  if (m.rewatch?.length) why = seenLine(m.rewatch) + why;
   const score = m.vote_average ? `★ ${Number(m.vote_average).toFixed(1)}` : "";
   const btns = kind === "watchlist"
     ? `<button class="ok" data-act="watched">Watched it</button><button data-act="unsave" title="Take it off the watchlist for ${esc(groupLabel())}">Remove</button>

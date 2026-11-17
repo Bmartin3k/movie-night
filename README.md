@@ -15,7 +15,7 @@ then get suggestions for one person or any group watching together.
   "Rated by me / Needs my rating / I haven't seen"; sort by my rating or family average. Click a card to
   rate it for anyone (one row of stars per person; everyone starts as "Not watched").
 - **Suggestions**
-  - Pick **who it's for**: Everyone, one person, or any mix. A movie is suggested as long as at least one person in the group hasn't seen it, and the card says who has (with their rating): on your own you never get one you've seen, but add a kid who hasn't and it can show up. Anything someone in the group rated under 2★ stays out.
+  - Pick **who it's for**: Everyone, one person, or any mix. A movie is suggested as long as at least one person in the group hasn't seen it, and the card says who has (with their rating): on your own you never get one you've seen, but add a kid who hasn't and it can show up. Anything someone in the group rated under 2★ stays out. *Ask Claude* and the Watchlist follow the same rule.
   - *Because you liked…*: TMDB recommendations of every movie the group rated, weighted by the group's
     **average** rating (4+★ pulls up, 2.5★ and under pushes down, so one person's dislike counts against it).
     TMDB's "similar movies" add more candidates. They're looser matches, so each counts for half and only once,
@@ -69,7 +69,7 @@ then get suggestions for one person or any group watching together.
   (saving it again with other people selected adds them; ★ Saved means it's saved for everyone selected).
   Rating it, skipping it or pressing Remove only takes it off the list of the people who did; it stays for
   anyone else it was saved for. It has the same "for" chips as Suggestions (one shared selection) and shows
-  what was saved for anyone selected, minus what someone selected has already seen and, with a kid included, anything
+  what was saved for anyone selected that someone selected still hasn't seen (minus anything one of them rated under 2★) and, with a kid included, nothing
   over their rating limit. Marking one "Watched it" moves it to Watched. With Radarr set up,
   each card shows whether Radarr has it (✓ Downloaded / ⏳ searching) or a **⬇ Request in Radarr** button that adds it
   (monitored, with a search) using your first quality profile and root folder, or the ones set in `.env`.

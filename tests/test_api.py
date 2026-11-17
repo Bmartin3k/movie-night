@@ -93,7 +93,7 @@ def test_watchlist_hides_what_someone_selected_has_seen(client, people, add_movi
     save(client, 1, "Up", [j, s])
     add_movie(1, "Up", {j: 9})                          # Jane watched and rated it
     assert wl(client) == {"Up": ["Sam"]}                # off Jane's list, still on Sam's
-    assert wl(client, [j, s]) == {"Up": ["Sam"]}        # together: Jane loved it (4½★), Sam hasn't seen it
+    assert wl(client, [j, s]) == {"Up": ["Sam"]}        # together: Sam hasn't seen it, Jane liked it
     assert client.get(f"/api/watchlist?people={j},{s}").get_json()[0]["rewatch"] == [{"name": "Jane", "rating": 9}]
     assert wl(client, [j]) == {}                        # Jane alone: she's seen it, nobody left to show it to
     assert wl(client, [s]) == {"Up": ["Sam"]}
@@ -102,16 +102,17 @@ def test_watchlist_hides_what_someone_selected_has_seen(client, people, add_movi
     assert wl(client) == {}                             # everyone it was saved for has seen it
 
 
-def test_watchlist_together_hides_it_when_a_viewer_rated_it_under_4_5(client, people, add_movie):
+def test_watchlist_together_hides_it_when_a_viewer_rated_it_under_2(client, people, add_movie):
     j, s, a = people["Jane"], people["Sam"], people["Alex"]
-    save(client, 1, "Up", [s])
-    save(client, 2, "Coco", [s])
-    save(client, 3, "Cars", [s])
-    add_movie(1, "Up", {j: 8})                          # 4★: wouldn't watch it again
-    add_movie(2, "Coco", {j: 10, a: 9})
-    add_movie(3, "Cars", {j: None})                     # seen, no rating
-    assert wl(client, [j, s]) == {"Coco": ["Sam"]}
-    assert wl(client, [j, s, a]) == {"Coco": ["Sam"]}
+    for tid, t in ((1, "Up"), (2, "Coco"), (3, "Cars"), (4, "Elio")):
+        save(client, tid, t, [s])
+    add_movie(1, "Up", {j: 4})                          # 2★: still fine for Sam
+    add_movie(2, "Coco", {j: 10, a: 3})                 # Alex gave it 1½★
+    add_movie(3, "Cars", {j: None})                     # seen, no rating: fine
+    add_movie(4, "Elio", {j: 3})                        # Jane gave it 1½★
+    assert wl(client, [j, s]) == {"Up": ["Sam"], "Coco": ["Sam"], "Cars": ["Sam"]}
+    assert wl(client, [j, s, a]) == {"Up": ["Sam"], "Cars": ["Sam"]}
+    assert wl(client, [s]) == {"Up": ["Sam"], "Coco": ["Sam"], "Cars": ["Sam"], "Elio": ["Sam"]}   # Jane not selected
     assert wl(client, [j, a]) == {}                     # saved for neither of them
 
 
@@ -362,13 +363,13 @@ def test_suggests_what_someone_in_the_group_hasnt_seen(client, people, add_movie
 
 
 # ---------------------------------------------------------------- Ask Claude (API faked)
-def test_claude_picks_follow_the_4_5_star_rule(client, people, add_movie, monkeypatch):
+def test_claude_picks_follow_the_shared_seen_rule(client, people, add_movie, monkeypatch):
     j, s = people["Jane"], people["Sam"]
     add_movie(1, "Loved by Jane", {j: 9})
-    add_movie(2, "Jane so-so", {j: 7})
+    add_movie(2, "Jane hated it", {j: 3})
     add_movie(3, "Both seen", {j: 10, s: 10})
-    picks = [{"title": t, "year": 2020, "reason": "r"} for t in ("Loved by Jane", "Jane so-so", "Both seen", "New one")]
-    ids = {"Loved by Jane": 1, "Jane so-so": 2, "Both seen": 3, "New one": 4}
+    picks = [{"title": t, "year": 2020, "reason": "r"} for t in ("Loved by Jane", "Jane hated it", "Both seen", "New one")]
+    ids = {"Loved by Jane": 1, "Jane hated it": 2, "Both seen": 3, "New one": 4}
     prompts = []
 
     class Fake:
@@ -396,7 +397,8 @@ def test_claude_picks_follow_the_4_5_star_rule(client, people, add_movie, monkey
     got = {m["title"]: m for m in client.post("/api/claude-suggestions", json={"people": [j, s]}).get_json()}
     assert set(got) == {"Loved by Jane", "New one"}
     assert got["Loved by Jane"]["rewatch"] == [{"name": "Jane", "rating": 9}]
-    assert "Loved by Jane (2020) — new to Sam" in prompts[0]
+    assert "Loved by Jane (2020) — Jane 9/10 [new to Sam]" in prompts[0]
+    assert "Jane hated it (2020) — Jane 3/10\n" in prompts[0]     # no mark: off limits
     got = {m["title"] for m in client.post("/api/claude-suggestions", json={"people": [j]}).get_json()}
     assert got == {"New one"}                       # Jane alone: nothing she's seen
 
@@ -613,11 +615,13 @@ def test_claude_prompt_gives_everyone_an_equal_say(client, people, add_movie, mo
     monkeypatch.setattr(A, "ANTHROPIC_KEY", "x")
     monkeypatch.setattr(A.anthropic, "Anthropic", Fake)
     client.post("/api/claude-suggestions", json={"people": [j, s]})
-    rated, _, seen = prompts[0].partition("Also already seen by someone in the group")
+    rated = prompts[0]
     assert "Sam fave" in rated and "Sam hate" in rated and "Sam 10/10" in rated
     assert rated.count("Jane 10/10") == 30 and rated.count("Jane 6/10") == 10   # her share: 80 // 2 = 40, loves first
-    seen = seen.split("\n\n")[0]
-    assert seen.count("Jane film") == 20 and "Jane film 59" in seen
+    # Jane's other 20 are new to Sam, so fair game: not listed at all (and the 40 shown are marked)
+    assert "Jane film 59" not in rated and "Also seen" not in rated and rated.count("[new to Sam]") == 40
+    assert "Sam hate (2020) — Sam 2/10\n" in rated                                # under 2★: no mark
     assert "equal say" in rated and "Jane 60, Sam 2" in rated
+    add_movie(50, "Both saw", {j: 5, s: 5})
     client.post("/api/claude-suggestions", json={"people": [j]})
-    assert "Also already seen" not in prompts[1] and prompts[1].count("— Jane ") == 60   # alone: everything
+    assert "Also seen" not in prompts[1] and prompts[1].count("— Jane ") == 61 and "[new to" not in prompts[1]   # alone: everything
