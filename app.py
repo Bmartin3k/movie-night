@@ -1615,6 +1615,9 @@ def rewatchable(conn, group, seen=None):
 
 
 # ---------------------------------------------------------------- suggestions: TMDB
+SEEN_LOW = 4      # 2★ out of 10: a movie someone in the group rated lower isn't suggested to the rest of them
+
+
 @app.get("/api/suggestions")
 def suggestions():
     """Score every TMDB recommendation and "similar movie" of every movie the group rated.
@@ -1628,7 +1631,7 @@ def suggestions():
     group has seen are boosted too ("Ben loved this").
 
     A movie is suggested while at least one person in the group hasn't seen it: Blake alone never gets one
-    he's seen, but Blake + Dexi do when Dexi hasn't. Those picks carry "seen_by" ([{name, rating}], rating
+    he's seen, but Blake + Dexi do when Dexi hasn't, unless someone in the group rated it under 2★ (SEEN_LOW). Those picks carry "seen_by" ([{name, rating}], rating
     None when seen but not rated). Seen by someone unlinked ("someone") counts as seen by everyone, to be safe.
     """
     if not TMDB_KEY:
@@ -1655,7 +1658,9 @@ def suggestions():
                           "WHERE m.tmdb_id IS NOT NULL AND w.rating IS NOT NULL"):
         if r[1] in group:
             rated.setdefault(r[0], {})[names[r[1]]] = r[2]
-    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | seen_all
+    # someone here who's seen it rated it under 2★: not worth putting the others through it
+    disliked = {t for t, r in rated.items() if any(v < SEEN_LOW for v in r.values())}
+    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")} | seen_all | disliked
     # already on the group's watchlist (saved for anyone selected, same as the Watchlist tab shows): not suggested again
     skip |= {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
 

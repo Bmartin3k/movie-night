@@ -345,17 +345,20 @@ def test_suggests_what_someone_in_the_group_hasnt_seen(client, people, add_movie
     add_movie(101, "Both seen", {s: 10, j: 9})
     add_movie(104, "Jane hasn't seen", {s: 6})
     add_movie(105, "Sam saw, no rating", {s: None})
-    recs[1] = [rec(101, "Both seen"), rec(102, "Fresh pick"), rec(104, "Jane hasn't seen"), rec(105, "Sam saw, no rating")]
+    add_movie(106, "Sam hated it", {s: 3})                      # 1½★: under 2★, kept from Jane too
+    recs[1] = [rec(101, "Both seen"), rec(102, "Fresh pick"), rec(104, "Jane hasn't seen"), rec(105, "Sam saw, no rating"),
+               rec(106, "Sam hated it")]
     get = lambda g: {m["title"]: m for m in client.get(f"/api/suggestions?people={g}").get_json()}
     both = get(f"{j},{s}")
-    # shown while at least one selected person hasn't seen it, whatever the others rated it
+    # shown while at least one selected person hasn't seen it, unless someone who saw it rated it under 2★
+    # ("Jane hasn't seen" at 3★ stays)
     assert set(both) == {"Fresh pick", "Jane hasn't seen", "Sam saw, no rating"}
     assert both["Jane hasn't seen"]["seen_by"] == [{"name": "Sam", "rating": 6}]
     assert both["Sam saw, no rating"]["seen_by"] == [{"name": "Sam", "rating": None}]
     assert "seen_by" not in both["Fresh pick"]
     assert not {"Both seen", "Jane hasn't seen", "Sam saw, no rating"} & set(get(str(s)))   # Sam alone: nothing he's seen
-    jane = get(str(j))
-    assert set(jane) == {"Fresh pick", "Jane hasn't seen", "Sam saw, no rating"} and "seen_by" not in jane["Jane hasn't seen"]
+    jane = get(str(j))   # Sam isn't selected, so his 1½★ doesn't count
+    assert set(jane) == {"Fresh pick", "Jane hasn't seen", "Sam saw, no rating", "Sam hated it"} and "seen_by" not in jane["Jane hasn't seen"]
 
 
 # ---------------------------------------------------------------- Ask Claude (API faked)
