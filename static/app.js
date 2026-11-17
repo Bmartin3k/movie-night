@@ -150,6 +150,7 @@ function watchedCard(m) {
     </div></article>`;
 }
 
+const fmtRuntime = (n) => n ? (n >= 60 ? `${Math.floor(n / 60)}h${n % 60 ? ` ${n % 60}m` : ""}` : `${n}m`) : "";
 // who in the group has already seen a pick that's still new to someone else, and how they rated it
 const seenLine = (who) => `<div class="seen-by">✓ ${who.map((r) => r.rating ? `${esc(r.name)} rated it ${fmtR(r.rating)}` : `${esc(r.name)} has seen it`).join(", ")}</div>`;
 function suggestionCard(m, kind) {
@@ -177,7 +178,7 @@ function suggestionCard(m, kind) {
     ${poster(m, score)}
     <div class="body">
       <div class="title">${esc(m.title)}</div>
-      <div class="meta">${esc([meta(m), m.cert].filter(Boolean).join(" · "))}</div>
+      <div class="meta">${esc([meta(m), m.cert, fmtRuntime(m.runtime)].filter(Boolean).join(" · "))}</div>
       ${why}
       ${m.overview ? `<div class="overview">${esc(m.overview)}</div>` : ""}
       <div class="btns">${btns}</div>
@@ -762,9 +763,9 @@ function renderSuggestions() {
   fillWhere($("#suggest-grid"));
   const empty = $("#suggest-empty");
   if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key in ⚙ Settings to get these."; }
-  else if (state.suggestions && !state.suggestions.length && !tonightOn()) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
+  else if (state.suggestions && !state.suggestions.length && !tonightOn() && !shortOn()) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
   else if (!unknown && all.length && !list.length && fresh) { empty.hidden = false; empty.textContent = "None of these are Fresh (Rotten Tomatoes 60%+, or Metacritic 61+ when there's no Tomatometer). Turn off 🍅 Fresh only to see them all."; }
-  else if (state.suggestions && !all.length && tonightOn()) { empty.hidden = false; empty.textContent = `Nothing for ${groupLabel()} is in the library or on your services right now. Turn off 📺 Watch tonight to see everything.`; }
+  else if (state.suggestions && !all.length && (tonightOn() || shortOn())) { empty.hidden = false; empty.textContent = `Nothing for ${groupLabel()} fits ${[tonightOn() && "📺 Watch tonight", shortOn() && "🌙 School night"].filter(Boolean).join(" and ")} right now. Turn it off to see everything.`; }
   else empty.hidden = true;
   const genres = [...new Set((state.suggestions || []).flatMap((m) => m.genres || []))].sort();
   $("#genre-filter").innerHTML = `<option value="">All genres</option>` + genres.map((x) => `<option ${x === g ? "selected" : ""}>${esc(x)}</option>`).join("");
@@ -793,12 +794,36 @@ async function loadWhere(ids) {
     catch { /* badges are a nice-to-have */ }
   }
 }
-async function fillWhere(grid) {
-  if (!state.status?.tonight || !grid) return;
+async function fillWhere(grid) {          // where-to-watch badges and runtimes for the cards on screen
+  if (!state.status?.tmdb || !grid) return;
   const cards = () => grid.querySelectorAll(".card[data-tmdb]");
   await loadWhere([...cards()].map((c) => c.dataset.tmdb));
-  cards().forEach((c) => whereBadge(c, whereCache[c.dataset.tmdb]));
+  cards().forEach((c) => {
+    const w = whereCache[c.dataset.tmdb];
+    whereBadge(c, w);
+    const mt = c.querySelector(".meta");
+    if (w?.runtime && mt && !mt.dataset.rt && !mt.textContent.includes(fmtRuntime(w.runtime))) {
+      mt.dataset.rt = "1";
+      mt.textContent = [mt.textContent, fmtRuntime(w.runtime)].filter(Boolean).join(" · ");
+    }
+  });
 }
+// 🌙 School night: 2 hours or less, on Suggestions (and Ask Claude) and the Watchlist
+const SCHOOL_NIGHT_MAX = 120;
+state.short = lsGet("short") === "1";
+const shortOn = () => !!(state.status?.tmdb && state.short);
+const shortEnough = (n) => !!n && n <= SCHOOL_NIGHT_MAX;
+function renderShort() {
+  $$(".short-btn").forEach((b) => { b.hidden = !state.status?.tmdb; b.setAttribute("aria-pressed", String(shortOn())); });
+}
+$$(".short-btn").forEach((b) => b.addEventListener("click", () => {
+  state.short = !state.short;
+  lsSet("short", state.short ? "1" : "");
+  renderShort();
+  claudeResults.length = 0; renderClaude();
+  if (!$("#tab-suggest").hidden) loadSuggestions(true); else state.suggestionsKey = null;
+  loadWatchlist();
+}));
 function renderTonight() {
   $$(".tonight-btn").forEach((b) => { b.hidden = !state.status?.tonight; b.setAttribute("aria-pressed", String(tonightOn())); });
 }
@@ -873,12 +898,12 @@ const isFresh = (m) => {
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();
-  const key = groupIds().join(",") + (tonightOn() ? "&tonight=1" : "");
+  const key = groupIds().join(",") + (tonightOn() ? "&tonight=1" : "") + (shortOn() ? "&short=1" : "");
   if (state.suggestions && !force && state.suggestionsKey === key) return renderSuggestions();
-  $("#suggest-grid").innerHTML = `<div class="spinner">Finding movies for ${esc(groupLabel())}${tonightOn() ? " you can watch tonight" : ""}…</div>`;
+  $("#suggest-grid").innerHTML = `<div class="spinner">Finding ${shortOn() ? "short " : ""}movies for ${esc(groupLabel())}${tonightOn() ? " you can watch tonight" : ""}…</div>`;
   try {
     state.suggestions = await api("/suggestions?people=" + key); state.suggestionsKey = key;
-    state.suggestions.forEach((m) => { if (m.where && m.tmdb_id) whereCache[m.tmdb_id] = m.where; });
+    state.suggestions.forEach((m) => { if (m.where && m.tmdb_id) whereCache[m.tmdb_id] = { ...m.where, runtime: m.runtime }; });
   }
   catch (err) { state.suggestions = []; $("#suggest-empty").textContent = err.message; }
   renderSuggestions();
@@ -934,7 +959,7 @@ $("#claude-form").addEventListener("submit", async (e) => {
   btn.disabled = true;
   $("#claude-grid").innerHTML = `<div class="spinner">Claude is going through ${esc(groupLabel())}'s ratings…</div>`;
   try {
-    const res = await api("/claude-suggestions", { method: "POST", body: { request: $("#claude-wish").value, people: groupIds() } });
+    const res = await api("/claude-suggestions", { method: "POST", body: { request: $("#claude-wish").value, people: groupIds(), short: shortOn() } });
     claudeResults.splice(0, claudeResults.length, ...res);
     renderClaude();
   } catch (err) {
@@ -1015,21 +1040,22 @@ async function fillRadarr() {
   } catch (err) { btns.forEach((b) => { b.textContent = "Radarr unavailable"; b.title = err.message; }); }
 }
 async function loadWatchlist() {
-  renderTonight();
+  renderTonight(); renderShort();
   state.watchlist = await api("/watchlist?people=" + groupIds().join(","));
   let list = state.watchlist;
-  if (tonightOn()) {
-    $("#watchlist-grid").innerHTML = `<div class="spinner">Checking what you can watch tonight…</div>`;
+  if (tonightOn() || shortOn()) {
+    $("#watchlist-grid").innerHTML = `<div class="spinner">Checking ${tonightOn() ? "what you can watch tonight" : "running times"}…</div>`;
     await loadWhere(list.map((m) => m.tmdb_id));
-    list = list.filter((m) => { const w = whereCache[m.tmdb_id]; return w && (w.library || w.stream?.length); });
+    if (tonightOn()) list = list.filter((m) => { const w = whereCache[m.tmdb_id]; return w && (w.library || w.stream?.length); });
+    if (shortOn()) list = list.filter((m) => shortEnough(whereCache[m.tmdb_id]?.runtime));
   }
   $("#watchlist-grid").innerHTML = list.map((m) => suggestionCard(m, "watchlist")).join("");
   fillRT($("#watchlist-grid"));
   fillWhere($("#watchlist-grid"));
   fillRadarr();
   $("#watchlist-empty").hidden = list.length > 0;
-  $("#watchlist-empty").innerHTML = state.watchlist.length && tonightOn()
-    ? `None of ${esc(groupLabel())}'s ${state.watchlist.length} saved movies are in the library or on your services. Turn off <b>📺 Watch tonight</b>, or request one in Radarr.`
+  $("#watchlist-empty").innerHTML = state.watchlist.length && (tonightOn() || shortOn())
+    ? `None of ${esc(groupLabel())}'s ${state.watchlist.length} saved movies fit ${[tonightOn() && "<b>📺 Watch tonight</b>", shortOn() && "<b>🌙 School night</b>"].filter(Boolean).join(" and ")}. Turn it off to see them all.`
     : `Nothing saved for ${esc(groupLabel())} that they haven't seen. Save suggestions here with <b>☆ Save</b>.`;
   $("#count-watchlist").textContent = state.watchlist.length || "";
 }
@@ -1228,7 +1254,7 @@ function showTab(name) {
 $$(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));
 
 function renderAll() {
-  renderMe(); renderWatched(); renderQueue(); renderForChips(); renderTonight();
+  renderMe(); renderWatched(); renderQueue(); renderForChips(); renderTonight(); renderShort();
   if (!$("#tab-suggest").hidden) loadSuggestions(false);
 }
 

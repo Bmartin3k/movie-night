@@ -693,3 +693,60 @@ def test_library_icon_comes_from_the_media_server(client, monkeypatch):
     monkeypatch.setattr(A, "EMBY_URL", "")
     A._lib_icon.update(at=0.0, img=None)
     assert client.get("/api/library-icon").status_code == 404
+
+
+def test_school_night_keeps_two_hours_or_less(client, people, add_movie, fake_tmdb, monkeypatch):
+    recs, _, _ = fake_tmdb
+    j = people["Jane"]
+    add_movie(1, "Seed", {j: 10})
+    recs[1] = [rec(101, "Epic"), rec(102, "Short one"), rec(103, "No runtime"), rec(104, "Exactly two hours")]
+    mins = {101: 169, 102: 95, 104: 120}
+    inner = A.tmdb_get
+
+    def tmdb_get(path, params=None, cache=True):
+        parts = path.strip("/").split("/")
+        if len(parts) == 2 and parts[0] == "movie":
+            return {"id": int(parts[1]), "runtime": mins.get(int(parts[1]), 0)}
+        return inner(path, params, cache)
+    monkeypatch.setattr(A, "tmdb_get", tmdb_get)
+    got = client.get(f"/api/suggestions?people={j}&short=1").get_json()
+    assert [m["title"] for m in got] == ["Short one", "Exactly two hours"]      # unknown length is left out
+    every = {m["title"]: m.get("runtime") for m in client.get(f"/api/suggestions?people={j}").get_json()}
+    assert every == {"Epic": 169, "Short one": 95, "No runtime": None, "Exactly two hours": 120}
+    assert client.get("/api/where?ids=101").get_json()["101"]["runtime"] == 169
+
+
+def test_claude_is_told_about_school_night_and_checked(client, people, add_movie, monkeypatch):
+    j = people["Jane"]
+    add_movie(1, "Seed", {j: 9})
+    picks = [{"title": t, "year": 2020, "reason": "r"} for t in ("Long", "Short")]
+    ids, mins, prompts = {"Long": 11, "Short": 12}, {11: 150, 12: 90}, []
+
+    class Fake:
+        def __init__(self, **kw):
+            self.beta = self.messages = self
+
+        def create(self, **kw):
+            prompts.append(kw["messages"][0]["content"])
+            block = type("B", (), {"type": "text", "text": json.dumps({"suggestions": picks})})
+            return type("R", (), {"stop_reason": "end_turn", "content": [block]})
+
+    def tmdb_get(path, params=None, cache=True):
+        if path == "/genre/movie/list":
+            return {"genres": []}
+        if path == "/search/movie":
+            t = params["query"]
+            return {"results": [{"id": ids[t], "title": t, "release_date": "2020-01-01", "genre_ids": []}]}
+        if path.startswith("/movie/"):
+            return {"runtime": mins[int(path.split("/")[2])]}
+        raise A.TMDBError(path)
+
+    monkeypatch.setattr(A, "ANTHROPIC_KEY", "x")
+    monkeypatch.setattr(A.anthropic, "Anthropic", Fake)
+    monkeypatch.setattr(A, "TMDB_KEY", "test")
+    monkeypatch.setattr(A, "tmdb_get", tmdb_get)
+    got = client.post("/api/claude-suggestions", json={"people": [j], "short": True}).get_json()
+    assert [m["title"] for m in got] == ["Short"] and got[0]["runtime"] == 90
+    assert "school night" in prompts[0] and "120 minutes" in prompts[0]
+    got = client.post("/api/claude-suggestions", json={"people": [j]}).get_json()
+    assert [m["title"] for m in got] == ["Long", "Short"] and "school night" not in prompts[1]

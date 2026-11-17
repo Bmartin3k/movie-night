@@ -79,6 +79,8 @@ then get suggestions for one person or any group watching together.
   pay for (pick them in ⚙ Settings → Streaming services; TMDB / JustWatch data, refreshed weekly). Every card shows where
   it is: your Emby (or Jellyfin) icon when Radarr has downloaded it, the service's logo for streaming. Every suggestion card has a **▶ Trailer** button (YouTube, from TMDB).
   Because you liked… shows the top 15.
+- **🌙 School night** (Suggestions, Ask Claude and Watchlist): only movies 2 hours or shorter, by TMDB's runtime
+  (movies with no runtime are left out). Every card shows its running time.
 
 ## Set up
 

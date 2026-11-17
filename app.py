@@ -50,6 +50,7 @@ ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 JELLYFIN_URL = JELLYFIN_KEY = PLEX_URL = PLEX_TOKEN = ""     # set by apply_settings()
 STREAM_SERVICES, STREAM_REGION = [], "US"                     # set by apply_settings()
 SUGGEST_KEEP = 15      # picks shown under "Because you liked…"
+SCHOOL_NIGHT_MAX = 120   # minutes: 🌙 School night hides anything longer
 JELLYFIN_USERS, PLEX_USERS = [], []
 DISMISS_WEIGHT = 0.25 * (2 - 5.5)     # a dismissed pick pulls like a quarter of a 1★ (2/10) rating: -0.875
 
@@ -625,18 +626,44 @@ def where_to_watch(tid, lib=None):
     return out
 
 
-def only_watchable(items, keep):
-    """Annotate items with "where" and keep the first `keep` that are in the library or on one of our services."""
-    lib = library_states()
+def runtime(tid):
+    """Minutes, from TMDB's movie details (cached a week), or None when TMDB doesn't know."""
+    try:
+        return tmdb_get(f"/movie/{int(tid)}").get("runtime") or None
+    except TMDBError:
+        return None
+
+
+def short_enough(minutes):
+    """School night: a known runtime of 2 hours or less (unknown is left out, to be safe)."""
+    return bool(minutes) and minutes <= SCHOOL_NIGHT_MAX
+
+
+def pick_filter(items, keep, tonight=False, short=False):
+    """Walk the ranked list in batches, adding "runtime" (and "where" when tonight), and keep the first `keep` that
+    pass: tonight = in the library or on one of our services; short = school night length."""
+    tonight = tonight and tonight_ready()
+    lib = library_states() if tonight else {}
     out = []
     for i in range(0, len(items), 24):
-        batch = [it for it in items[i:i + 24] if it.get("tmdb_id")]
+        batch = items[i:i + 24]
+
+        def look(it):
+            if not it.get("tmdb_id"):
+                return None, None
+            return runtime(it["tmdb_id"]), (where_to_watch(it["tmdb_id"], lib) if tonight else None)
         with ThreadPoolExecutor(max_workers=8) as pool:
-            wheres = list(pool.map(lambda it: where_to_watch(it["tmdb_id"], lib), batch))
-        for it, w in zip(batch, wheres):
-            it["where"] = w
-            if w["library"] or w["stream"]:
-                out.append(it)
+            found = list(pool.map(look, batch))
+        for it, (mins, w) in zip(batch, found):
+            if mins:
+                it["runtime"] = mins
+            if w is not None:
+                it["where"] = w
+            if tonight and not (w and (w["library"] or w["stream"])):
+                continue
+            if short and not short_enough(mins):
+                continue
+            out.append(it)
         if len(out) >= keep:
             break
     return out[:keep]
@@ -853,13 +880,20 @@ def radarr_status():
 
 @app.get("/api/where")
 def where():
-    """?ids=603,550 -> {"603": {"library": true, "stream": ["Netflix"]}, ...}, or {} when nothing is set up."""
+    """?ids=603,550 -> {"603": {"runtime": 136, "library": true, "stream": ["Netflix"]}, ...}. Without Radarr or
+    streaming services set up, just the runtime."""
     ids = [int(x) for x in request.args.get("ids", "").split(",") if x.strip().isdigit()][:100]
-    if not ids or not tonight_ready():
+    if not ids or not TMDB_KEY:
         return jsonify({})
-    lib = library_states()
+    ready = tonight_ready()
+    lib = library_states() if ready else {}
+
+    def info(t):
+        d = where_to_watch(t, lib) if ready else {}
+        d["runtime"] = runtime(t)
+        return d
     with ThreadPoolExecutor(8) as ex:
-        return jsonify({str(i): w for i, w in zip(ids, ex.map(lambda t: where_to_watch(t, lib), ids))})
+        return jsonify({str(i): d for i, d in zip(ids, ex.map(info, ids))})
 
 
 _lib_icon = {"at": 0.0, "img": None}
@@ -1929,10 +1963,10 @@ def suggestions():
                 o["rt"], o["mc"] = s_["rt"], s_["mc"]
                 o["score"] = round(o["score"] * critic_factor(s_, strength), 2)
         out.sort(key=lambda x: x["score"], reverse=True)
-    # "Watch tonight": only what's in the library or on a service we pay for, looked for among all 150
-    if request.args.get("tonight") == "1" and tonight_ready():
-        return jsonify(only_watchable(out, SUGGEST_KEEP))
-    return jsonify(out[:SUGGEST_KEEP])
+    # "Watch tonight" (in the library or on a service we pay for) and "School night" (2 hours or less) look
+    # through all 150 for the top 15 that pass; either way the picks carry their runtime for the cards.
+    return jsonify(pick_filter(out, SUGGEST_KEEP, tonight=request.args.get("tonight") == "1",
+                               short=request.args.get("short") == "1"))
 
 
 # ---------------------------------------------------------------- suggestions: Claude
@@ -1978,6 +2012,7 @@ def claude_suggestions():
         return jsonify(error="No Anthropic API key (add one in ⚙ Settings)"), 503
     body = request.get_json(silent=True) or {}
     wish = (body.get("request") or "").strip()[:500]
+    short = bool(body.get("short"))
     conn = db()
     group = selected_people(conn, body.get("people"))
     names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people")}
@@ -2073,6 +2108,9 @@ def claude_suggestions():
             f"SELECT name FROM people WHERE id IN ({','.join('?' * len(group))}) AND max_cert IS NOT NULL", group)]
         prompt += (f"\n\n{', '.join(kids)} {'is a child' if len(kids) == 1 else 'are children'}: only suggest movies "
                    f"rated {limit} or lower by the MPA (US), and make sure they suit that age.")
+    if short:
+        prompt += (f"\n\nIt's a school night: only suggest movies that run {SCHOOL_NIGHT_MAX // 60} hours "
+                   f"({SCHOOL_NIGHT_MAX} minutes) or less.")
     prompt += "\n\n" + (f"What they're in the mood for: {wish}\n\n" if wish else "")
     prompt += "Suggest 8 movies."
 
@@ -2135,6 +2173,8 @@ def claude_suggestions():
            and (i["title"].lower(), i["year"]) not in watched_titles]
     if limit and TMDB_KEY:   # double-check Claude against the real ratings
         out = apply_cert_limit(out, limit, keep=len(out))
+    if TMDB_KEY:             # runtimes for the cards; on a school night, double-check Claude's lengths too
+        out = pick_filter(out, len(out), short=short)
     return jsonify(out)
 
 
