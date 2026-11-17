@@ -763,7 +763,7 @@ function renderSuggestions() {
   const empty = $("#suggest-empty");
   if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key in ⚙ Settings to get these."; }
   else if (state.suggestions && !state.suggestions.length && !tonightOn()) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
-  else if (!unknown && all.length && !list.length && fresh) { empty.hidden = false; empty.textContent = "None of these are Fresh on Rotten Tomatoes. Turn off 🍅 Fresh only to see them all."; }
+  else if (!unknown && all.length && !list.length && fresh) { empty.hidden = false; empty.textContent = "None of these are Fresh (Rotten Tomatoes 60%+, or Metacritic 61+ when there's no Tomatometer). Turn off 🍅 Fresh only to see them all."; }
   else if (state.suggestions && !all.length && tonightOn()) { empty.hidden = false; empty.textContent = `Nothing for ${groupLabel()} is in the library or on your services right now. Turn off 📺 Watch tonight to see everything.`; }
   else empty.hidden = true;
   const genres = [...new Set((state.suggestions || []).flatMap((m) => m.genres || []))].sort();
@@ -864,7 +864,12 @@ async function fillRT(grid) {
   paintRT(grid);
   await loadRT([...grid.querySelectorAll(".card[data-tmdb]")].map((c) => c.dataset.tmdb), () => paintRT(grid));
 }
-const isFresh = (m) => parseInt(rtCache[m.tmdb_id]?.rt, 10) >= 60;
+// Fresh = 60%+ on Rotten Tomatoes; with no Tomatometer, a Metascore of 61+ (Metacritic's green "favorable") counts
+const isFresh = (m) => {
+  const s = rtCache[m.tmdb_id];
+  if (s?.rt) return parseInt(s.rt, 10) >= 60;
+  return s?.mc != null && Number(s.mc) >= 61;
+};
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();

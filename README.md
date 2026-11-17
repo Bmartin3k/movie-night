@@ -31,7 +31,8 @@ then get suggestions for one person or any group watching together.
     movie's score, from ×1.2 at 100 down to ×0.7 at 0, with 60 neutral. Your own ratings still matter most;
     critics mostly reorder close calls. For any group with a kid setting the boost is halved (×0.85–×1.1).
     Some movies have no scores on OMDb and are left as they are. **🍅 Fresh only**
-    (next to the genre filter) keeps only the Fresh ones in *Because you liked…*; movies with no score are hidden
+    (next to the genre filter) keeps only the Fresh ones in *Because you liked…* (Rotten Tomatoes 60%+, or a Metascore of 61+ when
+    there's no Tomatometer); movies with no score at all are hidden
     too. Each device remembers the setting.
 
   ![Suggestions for the whole family: kid-safe because Alex is included, with the reason for each pick](docs/suggestions.png)
