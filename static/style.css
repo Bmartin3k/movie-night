@@ -312,6 +312,11 @@ button.link { background: none; border: 0; padding: .2rem 0; color: inherit; opa
 .stack-keys { text-align: center; margin: .2rem 0 0; font-size: .75rem; opacity: .75; }
 .stack-done { text-align: center; padding: 2rem .5rem; }
 .stack-done .big { font-size: 2.5rem; }
-#stack-card.busy { opacity: .5; pointer-events: none; }
+#stack-card.busy { pointer-events: none; }
+#stack-card.busy > :not(.sstars) { opacity: .5; transition: opacity .2s; }
+.sstars.picked span:not(.off) { animation: star-pop .35s ease-out; }
+.sstars.picked::after { font-size: 1rem; padding: .3rem .6rem; }
+@keyframes star-pop { 50% { transform: scale(1.3); } }
+@media (prefers-reduced-motion: reduce) { .sstars.picked span { animation: none; } }
 @media (hover: none) { .stack-keys { display: none; } }
 @media (max-height: 640px) { .stack-poster { max-width: 170px; } }

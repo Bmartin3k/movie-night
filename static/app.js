@@ -632,8 +632,15 @@ async function stackDo(act, rating) {
   try {
     let mid = q.kind === "movie" ? q.key : null;
     if (act === "rate") {
-      if (q.kind === "queue") mid = (await api(`/emby/queue/${encodeURIComponent(q.key)}/rate`, { method: "POST", body: { rating, person_id: state.me } })).movie_id;
-      else await api(`/movies/${q.key}`, { method: "PUT", body: { ratings: [{ person_id: state.me, rating }] } });
+      // light up what was picked and hold it a moment, so you can see it before the next movie comes up
+      const c = $("#stack-card .sstars");
+      c.dataset.r = rating; paintStars(c, rating);
+      c.dataset.tip = fmtStars(rating); c.classList.remove("hovering"); c.classList.add("picked");
+      const save = q.kind === "queue"
+        ? api(`/emby/queue/${encodeURIComponent(q.key)}/rate`, { method: "POST", body: { rating, person_id: state.me } })
+        : api(`/movies/${q.key}`, { method: "PUT", body: { ratings: [{ person_id: state.me, rating }] } });
+      const [res] = await Promise.all([save, new Promise((r) => setTimeout(r, 650))]);
+      if (q.kind === "queue") mid = res.movie_id;
     } else await mark(q, act === "notme" ? "not_watched" : "skip");
     stack.history.push({ q, act, mid });
     stack.items.shift(); stack.done++; stack.changed = true;
