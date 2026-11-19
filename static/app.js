@@ -100,11 +100,12 @@ function paintStars(c, r) {
 }
 function chosenRating(c) {
   if (c.classList.contains("qstars")) return Number(c.closest(".card")?.dataset.r) || 0;
+  if (c.classList.contains("sstars")) return Number(c.dataset.r) || 0;
   const pid = Number(c.closest(".prow")?.dataset.pid);
   return state.draft?.[pid]?.rating || 0;
 }
 document.addEventListener("mousemove", (e) => {
-  const c = e.target.closest(".qstars, .stars.big");
+  const c = e.target.closest(".qstars, .stars.big, .sstars");
   if (!c) return;
   const r = ratingFromPointer(e);
   if (!r) return;
@@ -113,7 +114,7 @@ document.addEventListener("mousemove", (e) => {
   c.dataset.tip = fmtStars(r);
 });
 document.addEventListener("mouseout", (e) => {
-  const c = e.target.closest(".qstars, .stars.big");
+  const c = e.target.closest(".qstars, .stars.big, .sstars");
   if (!c || c.contains(e.relatedTarget)) return;
   c.classList.remove("hovering");
   delete c.dataset.tip;
@@ -564,6 +565,135 @@ $("#emby-sync").addEventListener("click", async () => {
   finally { b.disabled = false; renderQueue(); }
 });
 $("#torate-more").addEventListener("click", () => { state.queueShown += 48; renderQueue(); });
+
+// ---------- ⚡ Quick rate: the To rate list one movie at a time. Tapping the stars saves straight away and
+// brings up the next one; Undo (Z) takes back the last answer, so a mis-tap costs nothing.
+// Order: movies the imports / Watched say you saw first, then the ones more of the household rated
+// (likely the familiar ones, and they count for the most in group suggestions).
+const stack = { items: [], history: [], done: 0, busy: false, changed: false };
+function stackOrder(list) {
+  return list.filter((q) => !q.declined)
+    .map((q, i) => [q, i])
+    .sort(([a, i], [b, j]) => (b.credited - a.credited) || ((b.ratings?.length || 0) - (a.ratings?.length || 0)) || i - j)
+    .map(([q]) => q);
+}
+async function openStack() {
+  if (!requireMe()) return;
+  await loadQueue();
+  Object.assign(stack, { items: stackOrder(state.queue), history: [], done: 0, busy: false, changed: false });
+  $("#stack-toast").textContent = "";
+  renderStack();
+  $("#stack-dialog").showModal();
+}
+function renderStack() {
+  const q = stack.items[0], el = $("#stack-card");
+  $("#stack-undo").disabled = !stack.history.length || stack.busy;
+  $("#stack-progress").textContent = `${meP()?.name || ""} · ${stack.done} done · ${stack.items.length} left`;
+  if (!q) {
+    el.innerHTML = `<div class="stack-done"><div class="big">🎉</div><p><b>All caught up.</b></p>
+      <p class="muted small">${stack.done ? `You got through ${stack.done} this time. ` : ""}New Emby / Netflix watches will show up here.</p></div>`;
+    return;
+  }
+  const pre = q.kind === "queue" && q.favorite ? 9 : 0;
+  const img = q.poster_path ? `style="background-image:url('${IMG}w500${esc(q.poster_path)}')"` : "";
+  const others = q.ratings?.length ? `<div class="who">${q.ratings.map((r) => `<span>${esc(r.name)} ${fmtR(r.rating)}</span>`).join("")}</div>` : "";
+  const seen = q.credited ? `<div><span class="needs">${q.kind === "movie" ? "Marked as seen by you" : "Imports say you watched"}</span></div>` : "";
+  const when = q.kind === "queue" ? [q.watched_by, fmtDate(q.watched_on)].filter(Boolean).join(" · ") : fmtDate(q.watched_on);
+  el.innerHTML = `
+    <div class="stack-poster" ${img}>${q.poster_path ? "" : `<div class="noimg">${esc(q.title)}</div>`}<span class="src">${esc(srcLabel(q))}</span></div>
+    <div class="stack-info">
+      <div class="title">${esc(q.title)}</div>
+      <div class="meta">${esc(meta(q))}</div>
+      ${seen}${pre ? `<div class="fav">❤ A favorite on ${esc(MEDIA_NAMES[q.source] || "the media server")}</div>` : ""}
+      ${when ? `<div class="meta">${esc(when)}</div>` : ""}
+      ${others}
+      ${q.overview ? `<div class="overview" title="Tap to expand">${esc(q.overview)}</div>` : ""}
+    </div>
+    <div class="sstars" role="slider" aria-label="Rating: tap a star (left half = ½)" data-r="${pre}">${starSpans(pre)}</div>
+    <div class="stack-btns">
+      <button type="button" data-act="notme" title="You didn't watch this one (N)">Didn't watch</button>
+      <button type="button" data-act="skip" title="Seen it, don't want to rate it (S)">Skip</button>
+      <button type="button" data-act="later" title="Not sure yet: put it at the back (→)">Later →</button>
+    </div>`;
+  const next = stack.items[1];                       // warm the next poster so it's there instantly
+  if (next?.poster_path) new Image().src = `${IMG}w500${next.poster_path}`;
+}
+async function stackDo(act, rating) {
+  const q = stack.items[0];
+  if (!q || stack.busy) return;
+  if (act === "later") {
+    if (stack.items.length < 2) return;
+    stack.items.push(stack.items.shift());
+    stack.history.push({ q, act });
+    $("#stack-toast").textContent = `“${q.title}” moved to the back.`;
+    return renderStack();
+  }
+  stack.busy = true; $("#stack-card").classList.add("busy");
+  try {
+    let mid = q.kind === "movie" ? q.key : null;
+    if (act === "rate") {
+      if (q.kind === "queue") mid = (await api(`/emby/queue/${encodeURIComponent(q.key)}/rate`, { method: "POST", body: { rating, person_id: state.me } })).movie_id;
+      else await api(`/movies/${q.key}`, { method: "PUT", body: { ratings: [{ person_id: state.me, rating }] } });
+    } else await mark(q, act === "notme" ? "not_watched" : "skip");
+    stack.history.push({ q, act, mid });
+    stack.items.shift(); stack.done++; stack.changed = true;
+    $("#stack-toast").textContent = act === "rate" ? `Saved ${fmtStars(rating)} for “${q.title}”.`
+      : act === "notme" ? `“${q.title}”: didn't watch.` : `Skipped “${q.title}”.`;
+  } catch (err) { $("#stack-toast").textContent = err.message; }
+  finally { stack.busy = false; $("#stack-card").classList.remove("busy"); renderStack(); }
+}
+async function stackUndo() {
+  const h = stack.history.at(-1);
+  if (!h || stack.busy) return;
+  stack.busy = true;
+  let q = h.q;
+  try {
+    if (h.act === "later") stack.items.splice(stack.items.lastIndexOf(q), 1);
+    else if (h.act === "rate") {
+      // back to "seen, not rated" (a rated queue movie now lives in Watched, so it continues from there)
+      await api(`/movies/${h.mid}`, { method: "PUT", body: { ratings: [{ person_id: state.me, rating: null }] } });
+      q = { ...q, kind: "movie", key: String(h.mid), credited: true, favorite: 0 };
+    } else if (h.act === "skip") await mark(q, "undo_skip");
+    else {
+      await mark(q, "undo_not_watched");
+      if (q.kind === "movie" && q.credited)        // "didn't watch" also cleared their seen mark: put it back
+        await api(`/movies/${q.key}`, { method: "PUT", body: { ratings: [{ person_id: state.me, rating: null }] } });
+    }
+    stack.history.pop();
+    if (h.act !== "later") stack.done--;
+    stack.items.unshift(q);
+    $("#stack-toast").textContent = `Undone: “${q.title}” is back.`;
+  } catch (err) { $("#stack-toast").textContent = err.message; }
+  finally { stack.busy = false; renderStack(); }
+}
+$("#stack-btn").addEventListener("click", openStack);
+$("#stack-undo").addEventListener("click", stackUndo);
+$("#stack-close").addEventListener("click", () => $("#stack-dialog").close());
+$("#stack-dialog").addEventListener("close", () => {     // refresh the lists once, not after every answer
+  if (!stack.changed) return;
+  state.suggestionsKey = null;
+  loadQueue(); loadMovies(); loadWatchlist();
+  if (!$("#tab-suggest").hidden) loadSuggestions(false);
+});
+$("#stack-card").addEventListener("click", (e) => {
+  if (e.target.closest(".overview")) { e.target.closest(".overview").classList.toggle("open"); return; }
+  if (e.target.closest(".sstars")) { const r = ratingFromPointer(e); if (r) stackDo("rate", r); return; }
+  const b = e.target.closest("button[data-act]");
+  if (b) stackDo(b.dataset.act);
+});
+document.addEventListener("keydown", (e) => {     // on document: re-rendering the card can drop focus to <body>
+  if (!$("#stack-dialog").open || e.ctrlKey || e.metaKey || e.altKey) return;
+  const n = /^Digit([1-5])$/.exec(e.code);
+  const key = e.key.toLowerCase();
+  if (n) stackDo("rate", Number(n[1]) * 2 - (e.shiftKey ? 1 : 0));
+  else if (key === "n") stackDo("notme");
+  else if (key === "s") stackDo("skip");
+  else if (e.key === "ArrowRight") stackDo("later");
+  else if (key === "z" || e.key === "Backspace") stackUndo();
+  else return;
+  e.preventDefault();
+});
+
 $("#notme-toggle").addEventListener("click", (e) => {
   e.preventDefault();
   state.showNotMe = !state.showNotMe; state.queueShown = 48;

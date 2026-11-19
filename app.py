@@ -2878,7 +2878,7 @@ def emby_rate(emby_id):
     if q["tmdb_id"]:
         watchlist_prune(conn, q["tmdb_id"])
     conn.commit()
-    return "", 204
+    return jsonify(movie_id=mid)       # Quick rate's Undo turns it back into "seen, not rated" on this movie
 
 
 # ---------------------------------------------------------------- nightly backup

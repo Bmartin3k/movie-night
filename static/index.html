@@ -52,6 +52,7 @@
         <h2>Watched elsewhere, not rated yet</h2>
         <p class="muted small" id="emby-sync-info"></p>
       </div>
+      <button id="stack-btn" class="primary" title="One movie at a time: tap the stars and the next one comes up">⚡ Quick rate</button>
       <button id="netflix-btn" class="ghost">⇪ Import Netflix history</button>
       <button id="csv-btn" class="ghost">⇪ Import CSV (rentals…)</button>
       <button id="emby-sync" class="ghost" hidden>⟳ Sync</button>
@@ -332,6 +333,19 @@
       <button type="submit" class="primary" id="csv-go" disabled>Import</button>
     </div>
   </form>
+</dialog>
+
+<!-- Quick rate: one To rate movie at a time -->
+<dialog id="stack-dialog" aria-label="Quick rate">
+  <div class="stack-top">
+    <span id="stack-progress" class="muted small"></span>
+    <span class="spacer"></span>
+    <button type="button" id="stack-undo" class="ghost" disabled title="Undo the last one (Z)">↶ Undo</button>
+    <button type="button" id="stack-close" class="ghost">Done</button>
+  </div>
+  <div id="stack-card" tabindex="-1" autofocus></div>
+  <p id="stack-toast" class="muted small stack-toast" aria-live="polite"></p>
+  <p class="muted small stack-keys">Keys: <b>1</b>–<b>5</b> stars (hold Shift for ½ less) · <b>N</b> didn't watch · <b>S</b> skip · <b>→</b> later · <b>Z</b> undo</p>
 </dialog>
 
 <script src="app.js"></script>

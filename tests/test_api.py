@@ -64,6 +64,31 @@ def test_to_rate_needs_a_person_and_lists_seen_but_unrated(client, people, add_m
     assert client.get(f"/api/torate?person_id={people['Sam']}").get_json() == []
 
 
+def test_quick_rate_answers_can_be_undone(client, people, add_movie):
+    """⚡ Quick rate: rating a queued movie returns where it went, so Undo can make it "seen, not rated" again;
+    undoing "didn't watch" puts the seen mark back."""
+    conn = A.connect()
+    conn.execute("INSERT INTO emby_queue (emby_id, tmdb_id, title, watched_by, created_at) VALUES ('e1', 329865, 'Arrival', 'Jane, Sam', 0)")
+    conn.commit(); conn.close()
+    jane, sam = people["Jane"], people["Sam"]
+    as_person(client, jane)
+    r = client.post("/api/emby/queue/e1/rate", json={"rating": 8, "person_id": jane})
+    assert r.status_code == 200
+    mid = r.get_json()["movie_id"]
+    todo = lambda pid: [(q["title"], q["kind"], q["key"]) for q in client.get(f"/api/torate?person_id={pid}").get_json()
+                        if not q["declined"]]
+    assert todo(jane) == [] and todo(sam) == [("Arrival", "movie", str(mid))]
+    client.put(f"/api/movies/{mid}", json={"ratings": [{"person_id": jane, "rating": None}]})      # Undo
+    assert todo(jane) == [("Arrival", "movie", str(mid))]
+
+    as_person(client, sam)
+    client.post("/api/mark", json={"tmdb_id": 329865, "person_id": sam, "action": "not_watched"})
+    assert todo(sam) == []
+    client.post("/api/mark", json={"tmdb_id": 329865, "person_id": sam, "action": "undo_not_watched"})   # Undo
+    client.put(f"/api/movies/{mid}", json={"ratings": [{"person_id": sam, "rating": None}]})
+    assert todo(sam) == [("Arrival", "movie", str(mid))]
+
+
 # ---------------------------------------------------------------- watchlist: saved per person
 def wl(client, group=None):
     q = "" if group is None else "?people=" + ",".join(map(str, group))
