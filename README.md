@@ -49,7 +49,8 @@ then get suggestions for one person or any group watching together.
   - Tap the summary to expand it. **Wrong movie?** fixes a bad match (see below).
   - **⚡ Quick rate** goes through the list one movie at a time, for catching up on a long backlog: tapping the stars
     saves straight away and brings up the next one. Movies you're credited with come first, then the ones more of the
-    household has rated. **Didn't watch** / **Skip** work as above, **Later →** moves it to the back, and **↶ Undo**
+    household has rated. On a phone you can also slide a finger along the stars and lift to save (lift well above or
+    below the stars to cancel). **Didn't watch** / **Skip** work as above, **Later →** moves it to the back, and **↶ Undo**
     takes back the last answer. On a keyboard: 1–5 stars (Shift = ½ less), N, S, → and Z.
 
   ![To rate: movies from a rental history import, each with stars to rate, Didn't watch, Rate for others and Skip](docs/torate.png)

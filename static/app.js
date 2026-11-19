@@ -684,10 +684,54 @@ $("#stack-dialog").addEventListener("close", () => {     // refresh the lists on
 });
 $("#stack-card").addEventListener("click", (e) => {
   if (e.target.closest(".overview")) { e.target.closest(".overview").classList.toggle("open"); return; }
-  if (e.target.closest(".sstars")) { const r = ratingFromPointer(e); if (r) stackDo("rate", r); return; }
   const b = e.target.closest("button[data-act]");
   if (b) stackDo(b.dataset.act);
 });
+// Stars: press and slide along them (finger or mouse); they light up as you go and lifting saves.
+// Lifting well above or below the row cancels. A plain tap is just a short slide.
+function ratingAtX(c, x) {
+  const stars = [...c.querySelectorAll("[data-i]")];
+  const first = stars[0].getBoundingClientRect(), last = stars.at(-1).getBoundingClientRect();
+  if (x <= first.left) return 1;
+  if (x >= last.right) return 10;
+  for (const s of stars) {
+    const r = s.getBoundingClientRect();
+    if (x < r.right) return (Number(s.dataset.i) - 1) * 2 + (x - r.left < r.width / 2 ? 1 : 2);
+  }
+  return 10;
+}
+const slide = { on: false, r: 0 };
+function slidePaint(c, e) {
+  const r = ratingAtX(c, e.clientX);
+  const rb = c.getBoundingClientRect();
+  const off = e.clientY < rb.top - 50 || e.clientY > rb.bottom + 50;     // far off the row: will cancel
+  c.classList.toggle("cancel", off);
+  if (r !== slide.r && !off) navigator.vibrate?.(4);
+  slide.r = off ? 0 : r;
+  paintStars(c, slide.r); c.classList.add("hovering");
+  c.dataset.tip = off ? "Cancel" : fmtStars(r);
+}
+$("#stack-card").addEventListener("pointerdown", (e) => {
+  const c = e.target.closest(".sstars");
+  if (!c || stack.busy || e.button > 0) return;
+  e.preventDefault();
+  c.setPointerCapture(e.pointerId);
+  slide.on = true; slide.r = 0;
+  slidePaint(c, e);
+});
+$("#stack-card").addEventListener("pointermove", (e) => {
+  const c = e.target.closest(".sstars");
+  if (slide.on && c) slidePaint(c, e);
+});
+function slideEnd(e, commit) {
+  const c = e.target.closest(".sstars");
+  if (!slide.on || !c) return;
+  slide.on = false; c.classList.remove("cancel");
+  if (commit && slide.r) return stackDo("rate", slide.r);
+  c.classList.remove("hovering"); delete c.dataset.tip; paintStars(c, Number(c.dataset.r) || 0);
+}
+$("#stack-card").addEventListener("pointerup", (e) => slideEnd(e, true));
+$("#stack-card").addEventListener("pointercancel", (e) => slideEnd(e, false));
 document.addEventListener("keydown", (e) => {     // on document: re-rendering the card can drop focus to <body>
   if (!$("#stack-dialog").open || e.ctrlKey || e.metaKey || e.altKey) return;
   const n = /^Digit([1-5])$/.exec(e.code);
