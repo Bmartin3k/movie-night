@@ -443,8 +443,30 @@ async function loadMovies() {
 // say they didn't watch it, or skip it. Movies the imports credit to them come first.
 const MEDIA_NAMES = { emby: "Emby", jellyfin: "Jellyfin", plex: "Plex" };
 const srcLabel = (q) => q.kind === "movie" ? "Watched" : q.source === "netflix" ? "Netflix" : MEDIA_NAMES[q.source] || q.source;
+// Stars picked on To rate cards but not saved yet: {key: rating}, kept per person on this device, so a redraw
+// (another card saved, a sync, a reload) doesn't throw them away. "✓ Save all" saves them in one go.
+const pending = {
+  map: {},
+  lsKey: () => `pending:${state.me}`,
+  load() { try { this.map = JSON.parse(lsGet(this.lsKey()) || "{}") || {}; } catch { this.map = {}; } },
+  save() { lsSet(this.lsKey(), Object.keys(this.map).length ? JSON.stringify(this.map) : ""); },
+  set(key, r) { this.map[key] = r; this.save(); },
+  drop(key) { if (key in this.map) { delete this.map[key]; this.save(); } },
+  live() { return state.queue.filter((q) => !q.declined && q.key in this.map); },
+};
+function renderSaveAll() {
+  const n = pending.live().length;
+  const bar = $("#saveall-bar");
+  bar.hidden = !n;
+  $("#saveall-text").textContent = `${n} rating${n === 1 ? "" : "s"} not saved yet`;
+  $("#saveall-btn").textContent = n > 1 ? `✓ Save all ${n}` : "✓ Save it";
+}
+window.addEventListener("beforeunload", (e) => {
+  if (pending.live().length) { e.preventDefault(); e.returnValue = ""; }
+});
 function queueCard(q) {
-  const pre = q.kind === "queue" && q.favorite ? 9 : 0;
+  const picked = pending.map[q.key];
+  const pre = picked || (q.kind === "queue" && q.favorite ? 9 : 0);
   const notNames = (q.not_watched || []).filter((id) => id !== state.me).map((id) => person(id)?.name).filter(Boolean);
   const others = q.ratings?.length ? `<div class="who">${q.ratings.map((r) => `<span>${esc(r.name)} ${fmtR(r.rating)}</span>`).join("")}</div>` : "";
   const credit = q.credited ? `<span class="needs">${q.kind === "movie" ? "You watched this" : "Imports say you watched"}</span>` : "";
@@ -479,7 +501,12 @@ function renderQueue() {
   const list = visibleQueue();
   const live = state.queue.filter((q) => !q.declined);
   const declinedN = state.queue.length - live.length;
+  if (state.queueFor === state.me) {           // drop picks for movies no longer on the list (rated elsewhere...)
+    const keys = new Set(state.queue.map((q) => q.key));
+    Object.keys(pending.map).forEach((k) => { if (!keys.has(k)) pending.drop(k); });
+  }
   $("#torate-grid").innerHTML = list.slice(0, state.queueShown).map(queueCard).join("");
+  renderSaveAll();
   fillRT($("#torate-grid"));                // critic badges for the cards on screen only
   const more = $("#torate-more");
   more.hidden = list.length <= state.queueShown;
@@ -501,23 +528,28 @@ function renderQueue() {
   $("#emby-sync").textContent = `⟳ Sync from ${on.map((k) => MEDIA_NAMES[k]).join(" + ")}`;
 }
 async function loadQueue() {
-  state.queue = meP() ? await api(`/torate?person_id=${state.me}`) : [];
+  const me = state.me;
+  state.queue = meP() ? await api(`/torate?person_id=${me}`) : [];
+  state.queueFor = meP() ? me : null;
+  pending.load();
   renderQueue();
 }
 const findQ = (card) => state.queue.find((x) => x.key === card.dataset.key);
 function dropCard(card, q) {
+  pending.drop(q.key);
   card.classList.add("done");
   state.queue = state.queue.filter((x) => x !== q);
   setTimeout(renderQueue, 300);
 }
+const saveRating = (q, rating) => q.kind === "queue"
+  ? api(`/emby/queue/${encodeURIComponent(q.key)}/rate`, { method: "POST", body: { rating, person_id: state.me } })
+  : api(`/movies/${q.key}`, { method: "PUT", body: { ratings: [{ person_id: state.me, rating }] } });
 async function rateQueued(card, rating) {
   if (!requireMe()) return;
   const q = findQ(card);
   card.classList.add("done");
-  try {
-    if (q.kind === "queue") await api(`/emby/queue/${encodeURIComponent(q.key)}/rate`, { method: "POST", body: { rating, person_id: state.me } });
-    else await api(`/movies/${q.key}`, { method: "PUT", body: { ratings: [{ person_id: state.me, rating }] } });
-  } catch (err) { card.classList.remove("done"); alert(err.message); return; }
+  try { await saveRating(q, rating); }
+  catch (err) { card.classList.remove("done"); alert(err.message); return; }
   dropCard(card, q);
   state.suggestionsKey = null;
   loadMovies(); loadWatchlist();
@@ -533,6 +565,8 @@ $("#torate-grid").addEventListener("click", async (e) => {
     card.querySelector(".qstars").innerHTML = starSpans(r);
     const ok = card.querySelector('[data-act="confirm"]');
     ok.hidden = false; ok.textContent = `✓ Save ${fmtStars(r)}`;
+    pending.set(card.dataset.key, r);
+    renderSaveAll();
     return;
   }
   if (e.target.closest(".overview")) { e.target.closest(".overview").classList.toggle("open"); return; }
@@ -541,7 +575,7 @@ $("#torate-grid").addEventListener("click", async (e) => {
   const q = findQ(card);
   try {
     if (btn.dataset.act === "confirm") rateQueued(card, Number(card.dataset.r));
-    if (btn.dataset.act === "notme") { await mark(q, "not_watched"); q.declined = true; q.credited = false; card.classList.add("done"); setTimeout(renderQueue, 300); state.suggestionsKey = null; }
+    if (btn.dataset.act === "notme") { pending.drop(q.key); await mark(q, "not_watched"); q.declined = true; q.credited = false; card.classList.add("done"); setTimeout(renderQueue, 300); state.suggestionsKey = null; }
     if (btn.dataset.act === "undo-notme") { await mark(q, "undo_not_watched"); q.declined = false; renderQueue(); state.suggestionsKey = null; }
     if (btn.dataset.act === "skip") { await mark(q, "skip"); dropCard(card, q); state.suggestionsKey = null; }
     if (btn.dataset.act === "who") {
@@ -553,6 +587,27 @@ $("#torate-grid").addEventListener("click", async (e) => {
       else openRematch(state.movies.find((m) => String(m.id) === q.key), "movie");
     }
   } catch (err) { alert(err.message); }
+});
+$("#saveall-btn").addEventListener("click", async () => {
+  if (!requireMe()) return;
+  const btn = $("#saveall-btn"), todo = pending.live();
+  btn.disabled = true;
+  const failed = [];
+  for (const [i, q] of todo.entries()) {
+    btn.textContent = `Saving ${i + 1} of ${todo.length}…`;
+    try { await saveRating(q, pending.map[q.key]); pending.drop(q.key); }
+    catch (err) { failed.push(`${q.title}: ${err.message}`); }
+  }
+  btn.disabled = false;
+  state.suggestionsKey = null;
+  await Promise.all([loadQueue(), loadMovies()]);
+  loadWatchlist();
+  if (failed.length) alert(`Couldn't save ${failed.length} (still picked, try again):\n` + failed.join("\n"));
+});
+$("#saveall-clear").addEventListener("click", () => {
+  if (!confirm("Forget the stars you picked and didn't save?")) return;
+  pending.live().forEach((q) => pending.drop(q.key));
+  renderQueue();
 });
 $("#emby-sync").addEventListener("click", async () => {
   const b = $("#emby-sync"); b.disabled = true; b.textContent = "Syncing…";

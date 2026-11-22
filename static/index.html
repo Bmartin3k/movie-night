@@ -59,13 +59,18 @@
       <button id="emby-sync" class="ghost" hidden>⟳ Sync</button>
     </div>
     <p class="muted small">What <b id="torate-me">you</b> might have watched and haven't rated: your own Netflix profile and imports,
-      movies you're marked as having seen, and anything from the shared Emby / Jellyfin / Plex accounts or rentals. Tap the stars (left half = ½), then <b>✓ Save</b>.
+      movies you're marked as having seen, and anything from the shared Emby / Jellyfin / Plex accounts or rentals. Tap the stars (left half = ½), then <b>✓ Save</b>, or pick several and <b>✓ Save all</b> at the bottom.
       <b>Didn't watch</b> and <b>Skip</b> (seen it, won't rate) only take it off <i>your</i> list. <b>Rate for others</b> rates it for several people at once.
       ❤ favorites come pre-filled, so just hit ✓.</p>
     <div class="for-bar">
       <a href="#" id="notme-toggle" class="small" hidden></a>
     </div>
     <div id="torate-grid" class="grid"></div>
+    <div id="saveall-bar" hidden>
+      <span id="saveall-text"></span>
+      <button id="saveall-clear" class="ghost" type="button">Clear</button>
+      <button id="saveall-btn" class="primary" type="button">✓ Save all</button>
+    </div>
     <button id="torate-more" class="ghost more" hidden></button>
     <p id="torate-empty" class="empty" hidden>All caught up 🎉</p>
   </section>

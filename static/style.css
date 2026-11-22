@@ -368,3 +368,13 @@ button.link { background: none; border: 0; padding: .2rem 0; color: inherit; opa
 .meter { height: 8px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin: .3rem 0; }
 .meter span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 .pair .small { margin-top: .15rem; }
+
+/* To rate: picked but not saved */
+#saveall-bar {
+  position: sticky; bottom: 12px; z-index: 4; margin: 1rem auto 0; max-width: 560px;
+  display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+  background: var(--panel-2); border: 1px solid var(--accent); border-radius: var(--radius);
+  padding: .6rem .8rem; box-shadow: 0 6px 24px rgba(0,0,0,.5);
+}
+#saveall-bar[hidden] { display: none; }
+#saveall-text { flex: 1; min-width: 140px; }
