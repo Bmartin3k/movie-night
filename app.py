@@ -639,9 +639,45 @@ def short_enough(minutes):
     return bool(minutes) and minutes <= SCHOOL_NIGHT_MAX
 
 
+# Straight-to-video animation (DC/Marvel animated movies, Disney video sequels, toy tie-ins) is never suggested
+# (household choice, 2026-11-22). Spotted by studio, since TMDB often lists these as theatrical; a box office of
+# VIDEO_ANIMATION_REVENUE or more means a real cinema run (Teen Titans Go! To the Movies, Planes) and keeps it.
+VIDEO_ANIMATION_STUDIOS = {
+    "warner bros. animation", "warner premiere", "warner bros. home entertainment", "marvel animation",
+    "disneytoon studios", "disney television animation", "dreamworks animation television",
+    "universal cartoon studios", "universal animation studios", "universal 1440 entertainment",
+    "mattel", "mattel playground productions", "mattel creations", "mattel television", "mattel entertainment",
+    "nerd corps entertainment", "the lego group",
+}   # not Hanna-Barbera or Rainmaker: they made cinema releases too (Jetsons: The Movie, Ratchet & Clank)
+VIDEO_ANIMATION_REVENUE = 20_000_000
+
+
+def video_animation(tid):
+    """True for an animated movie that went straight to video: from a video/TV animation studio, or released in the
+    US only on disc; either way without a VIDEO_ANIMATION_REVENUE box office. Unknown = False. TV specials
+    (A Charlie Brown Christmas, Rudolph) aren't straight-to-video and stay."""
+    try:
+        d = tmdb_get(f"/movie/{int(tid)}")
+    except TMDBError:
+        return False
+    if "Animation" not in [g_.get("name") for g_ in d.get("genres", [])]:
+        return False
+    if (d.get("revenue") or 0) >= VIDEO_ANIMATION_REVENUE:
+        return False
+    if any((c.get("name") or "").strip().lower() in VIDEO_ANIMATION_STUDIOS for c in d.get("production_companies", [])):
+        return True
+    try:
+        rd = tmdb_get(f"/movie/{int(tid)}/release_dates")
+    except TMDBError:
+        return False
+    us = {r.get("type") for c in rd.get("results", []) if c.get("iso_3166_1") == "US" for r in c.get("release_dates", [])}
+    return us == {5}                           # 5 = physical (disc) only
+
+
 def pick_filter(items, keep, tonight=False, short=False):
     """Walk the ranked list in batches, adding "runtime" (and "where" when tonight), and keep the first `keep` that
-    pass: tonight = in the library or on one of our services; short = school night length."""
+    pass: tonight = in the library or on one of our services; short = school night length. Straight-to-video
+    animation never passes."""
     tonight = tonight and tonight_ready()
     lib = library_states() if tonight else {}
     out = []
@@ -650,11 +686,14 @@ def pick_filter(items, keep, tonight=False, short=False):
 
         def look(it):
             if not it.get("tmdb_id"):
-                return None, None
-            return runtime(it["tmdb_id"]), (where_to_watch(it["tmdb_id"], lib) if tonight else None)
+                return None, None, False
+            return (runtime(it["tmdb_id"]), (where_to_watch(it["tmdb_id"], lib) if tonight else None),
+                    video_animation(it["tmdb_id"]))
         with ThreadPoolExecutor(max_workers=8) as pool:
             found = list(pool.map(look, batch))
-        for it, (mins, w) in zip(batch, found):
+        for it, (mins, w, dtv) in zip(batch, found):
+            if dtv:
+                continue
             if mins:
                 it["runtime"] = mins
             if w is not None:
@@ -2288,7 +2327,8 @@ are for one person, tailor them to that person alone.
 
 Suggest real, released feature films that nobody in the group has seen. Never suggest anything in the
 ratings list or the "don't suggest" lists. Movies another household member loved are fair game if the group hasn't seen
-them. Mix a few well-known picks with a few less obvious ones. Each reason is one or two sentences
+them. No straight-to-video animation (DC or Marvel animated movies, direct-to-video
+Disney sequels, toy tie-ins and the like); animated films that played in cinemas are fine. Mix a few well-known picks with a few less obvious ones. Each reason is one or two sentences
 addressed to the group, naming the people and the specific movies on their lists it connects to."""
 
 

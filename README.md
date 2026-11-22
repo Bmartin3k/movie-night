@@ -86,6 +86,10 @@ then get suggestions for one person or any group watching together.
   Because you liked… shows the top 15.
 - **🌙 School night** (Suggestions, Ask Claude and Watchlist): only movies 2 hours or shorter, by TMDB's runtime
   (movies with no runtime are left out). Every card shows its running time.
+- **No straight-to-video animation** anywhere in Suggestions, Finish the series or Ask Claude: DC / Marvel animated
+  movies, Disney video sequels, toy tie-ins. Spotted by studio (Warner Bros. Animation, Marvel Animation, DisneyToon,
+  Mattel...) or a disc-only US release, unless it made $20M+ at the box office (`VIDEO_ANIMATION_STUDIOS` in app.py).
+  Cinema animation and TV specials (A Charlie Brown Christmas) still show.
 - **Finish the series** (Suggestions, below "Because you liked…"): for series (TMDB collections) someone selected
   has started, the next released movie none of them have seen. Series they rated under 3★ and parts TMDB users rate
   under 5.5 are left out; kid limits, 📺 Watch tonight and 🌙 School night apply.

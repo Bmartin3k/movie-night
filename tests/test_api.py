@@ -852,3 +852,33 @@ def test_series_respects_kid_limits(client, people, add_movie, fake_tmdb):
     assert client.get(f"/api/series?people={a}").get_json() == []
     certs[8] = "PG"
     assert [m["title"] for m in client.get(f"/api/series?people={a}").get_json()] == ["Aliens"]
+
+
+# ---------------------------------------------------------------- straight-to-video animation
+def test_video_animation_is_never_suggested(client, people, add_movie, fake_tmdb, monkeypatch):
+    recs, _, _ = fake_tmdb
+    j = people["Jane"]
+    anim = [{"name": "Animation"}]
+    details = {
+        11: {"id": 11, "genres": anim, "revenue": 0, "production_companies": [{"name": "Warner Bros. Animation"}]},
+        12: {"id": 12, "genres": anim, "revenue": 52_000_000, "production_companies": [{"name": "Warner Bros. Animation"}]},
+        13: {"id": 13, "genres": anim, "revenue": 0, "production_companies": [{"name": "Somebody"}]},     # US disc only
+        14: {"id": 14, "genres": anim, "revenue": 0, "production_companies": [{"name": "Somebody"}]},     # US cinemas
+        15: {"id": 15, "genres": [{"name": "Action"}], "revenue": 0, "production_companies": [{"name": "Marvel Animation"}]},
+        16: {"id": 16, "genres": anim, "revenue": 0, "production_companies": [{"name": "Somebody"}]},     # TV special
+    }
+    us_types = {13: [5], 14: [3], 16: [5, 6]}
+    faked = A.tmdb_get
+
+    def tmdb_get(path, params=None, cache=True):
+        parts = path.strip("/").split("/")
+        if len(parts) == 2 and parts[0] == "movie" and int(parts[1]) in details:
+            return details[int(parts[1])]
+        if parts[-1] == "release_dates" and int(parts[1]) in us_types:
+            return {"results": [{"iso_3166_1": "US", "release_dates": [{"type": t} for t in us_types[int(parts[1])]]}]}
+        return faked(path, params, cache)
+    monkeypatch.setattr(A, "tmdb_get", tmdb_get)
+    assert [A.video_animation(t) for t in (11, 12, 13, 14, 15, 16, 99)] == [True, False, True, False, False, False, False]
+    add_movie(1, "Seed", {j: 10})
+    recs[1] = [{"id": t, "title": f"M{t}", "genre_ids": [], "vote_average": 7, "vote_count": 100} for t in (11, 12, 13, 14, 15)]
+    assert sorted(titles(client, [j])) == ["M12", "M14", "M15"]
