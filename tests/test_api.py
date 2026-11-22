@@ -882,3 +882,18 @@ def test_video_animation_is_never_suggested(client, people, add_movie, fake_tmdb
     add_movie(1, "Seed", {j: 10})
     recs[1] = [{"id": t, "title": f"M{t}", "genre_ids": [], "vote_average": 7, "vote_count": 100} for t in (11, 12, 13, 14, 15)]
     assert sorted(titles(client, [j])) == ["M12", "M14", "M15"]
+
+
+def test_genre_gives_the_top_15_of_that_genre(client, people, add_movie, fake_tmdb, monkeypatch):
+    recs, _, _ = fake_tmdb
+    monkeypatch.setattr(A, "SUGGEST_KEEP", 3)
+    monkeypatch.setattr(A, "genre_map", lambda: {1: "Comedy", 2: "Horror"})
+    j = people["Jane"]
+    add_movie(1, "Seed", {j: 10})
+    # five comedies outrank the horror movies, so the overall top 3 has no horror at all
+    recs[1] = ([{"id": 100 + i, "title": f"C{i}", "genre_ids": [1], "vote_average": 7, "vote_count": 100} for i in range(5)]
+               + [{"id": 200 + i, "title": f"H{i}", "genre_ids": [2], "vote_average": 7, "vote_count": 100} for i in range(4)])
+    assert titles(client, [j]) == ["C0", "C1", "C2"]
+    got = [m["title"] for m in client.get(f"/api/suggestions?people={j}&genre=Horror").get_json()]
+    assert got == ["H0", "H1", "H2"]
+    assert client.get("/api/genres").get_json() == ["Comedy", "Horror"]

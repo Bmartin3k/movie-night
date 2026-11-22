@@ -986,7 +986,7 @@ const onForChip = (e) => {
 };
 $$(".for-chips").forEach((el) => el.addEventListener("click", onForChip));
 function renderSuggestions() {
-  const g = $("#genre-filter").value;
+  const g = state.genre;
   const fb = $("#fresh-only");
   fb.hidden = !state.status.rt;
   const fresh = state.status.rt && state.freshOnly;
@@ -994,19 +994,32 @@ function renderSuggestions() {
   const all = state.suggestions || [];
   all.forEach((m) => { if (m.tmdb_id && "mc" in m && !(m.tmdb_id in rtCache)) rtCache[m.tmdb_id] = { rt: m.rt, mc: m.mc }; });
   const unknown = fresh && all.some((m) => m.tmdb_id && !rtSettled(m.tmdb_id));
-  const list = all.filter((m) => (!g || (m.genres || []).includes(g)) && (!fresh || isFresh(m)));
+  const list = all.filter((m) => !fresh || isFresh(m));
   $("#suggest-grid").innerHTML = unknown ? `<div class="spinner">Checking Rotten Tomatoes scores…</div>` : list.map((m) => suggestionCard(m)).join("");
   if (unknown) loadRT(all.map((m) => m.tmdb_id)).then(renderSuggestions);
   else fillRT($("#suggest-grid"));
   fillWhere($("#suggest-grid"));
   const empty = $("#suggest-empty");
   if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key in ⚙ Settings to get these."; }
+  else if (state.suggestions && !all.length && g) { empty.hidden = false; empty.textContent = `No ${g} picks for ${groupLabel()}${tonightOn() || shortOn() ? " with these toggles" : ""}. Pick another genre or All genres.`; }
   else if (state.suggestions && !state.suggestions.length && !tonightOn() && !shortOn()) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
   else if (!unknown && all.length && !list.length && fresh) { empty.hidden = false; empty.textContent = "None of these are Fresh (Rotten Tomatoes 60%+, or Metacritic 61+ when there's no Tomatometer). Turn off 🍅 Fresh only to see them all."; }
   else if (state.suggestions && !all.length && (tonightOn() || shortOn())) { empty.hidden = false; empty.textContent = `Nothing for ${groupLabel()} fits ${[tonightOn() && "📺 Watch tonight", shortOn() && "🌙 School night"].filter(Boolean).join(" and ")} right now. Turn it off to see everything.`; }
   else empty.hidden = true;
-  const genres = [...new Set((state.suggestions || []).flatMap((m) => m.genres || []))].sort();
-  $("#genre-filter").innerHTML = `<option value="">All genres</option>` + genres.map((x) => `<option ${x === g ? "selected" : ""}>${esc(x)}</option>`).join("");
+  renderGenres();
+}
+// Genre picker: every TMDB genre; picking one asks the server for the top 15 of that genre
+state.genre = lsGet("genre") || "";
+let genreList = null;
+function renderGenres() {
+  const names = [...new Set([...(genreList || []), ...(state.genre ? [state.genre] : [])])].sort();
+  $("#genre-filter").innerHTML = `<option value="">All genres</option>` +
+    names.map((x) => `<option ${x === state.genre ? "selected" : ""}>${esc(x)}</option>`).join("");
+}
+async function loadGenres() {
+  if (genreList || !state.status.tmdb) return;
+  try { genreList = await api("/genres"); } catch { return; }
+  renderGenres();
 }
 function renderClaude() { $("#claude-grid").innerHTML = claudeResults.map((m) => suggestionCard(m)).join(""); fillRT($("#claude-grid")); fillWhere($("#claude-grid")); }
 
@@ -1136,12 +1149,18 @@ const isFresh = (m) => {
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();
-  const key = groupIds().join(",") + (tonightOn() ? "&tonight=1" : "") + (shortOn() ? "&short=1" : "");
+  loadGenres();
+  const base = groupIds().join(",") + (tonightOn() ? "&tonight=1" : "") + (shortOn() ? "&short=1" : "");
+  const key = base + (state.genre ? "&genre=" + encodeURIComponent(state.genre) : "");
   if (state.suggestions && !force && state.suggestionsKey === key) return renderSuggestions();
-  $("#suggest-grid").innerHTML = `<div class="spinner">Finding ${shortOn() ? "short " : ""}movies for ${esc(groupLabel())}${tonightOn() ? " you can watch tonight" : ""}…</div>`;
+  $("#suggest-grid").innerHTML = `<div class="spinner">Finding ${shortOn() ? "short " : ""}${state.genre ? esc(state.genre) + " " : ""}movies for ${esc(groupLabel())}${tonightOn() ? " you can watch tonight" : ""}…</div>`;
+  $("#suggest-empty").hidden = true;
   try {
-    loadSeries(key);
-    state.suggestions = await api("/suggestions?people=" + key); state.suggestionsKey = key;
+    if (force || state.seriesKey !== base) loadSeries(base);     // the series row doesn't depend on the genre
+    state.loadingKey = key;
+    const res = await api("/suggestions?people=" + key);
+    if (state.loadingKey !== key) return;          // a newer pick (genre, chips) is already on its way
+    state.suggestions = res; state.suggestionsKey = key;
     state.suggestions.forEach((m) => { if (m.where && m.tmdb_id) whereCache[m.tmdb_id] = { ...m.where, runtime: m.runtime }; });
   }
   catch (err) { state.suggestions = []; $("#suggest-empty").textContent = err.message; }
@@ -1164,7 +1183,11 @@ function renderSeries() {
   $("#series-grid").innerHTML = list.map((m) => suggestionCard(m)).join("");
   fillRT($("#series-grid")); fillWhere($("#series-grid"));
 }
-$("#genre-filter").addEventListener("change", renderSuggestions);
+$("#genre-filter").addEventListener("change", () => {
+  state.genre = $("#genre-filter").value;
+  lsSet("genre", state.genre);
+  loadSuggestions(false);
+});
 state.freshOnly = lsGet("freshOnly") === "1";
 $("#fresh-only").addEventListener("click", () => {
   state.freshOnly = !state.freshOnly;

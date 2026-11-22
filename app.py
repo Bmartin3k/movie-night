@@ -1842,6 +1842,12 @@ SEEN_LOW = 4      # 2★ out of 10: a movie someone in the group rated lower isn
 
 
 # ---------------------------------------------------------------- suggestions: TMDB
+@app.get("/api/genres")
+def genres():
+    """TMDB's movie genre names, for the Suggestions genre picker."""
+    return jsonify(sorted(genre_map().values()) if TMDB_KEY else [])
+
+
 @app.get("/api/suggestions")
 def suggestions():
     """Score every TMDB recommendation and "similar movie" of every movie the group rated.
@@ -1988,6 +1994,10 @@ def suggestions():
         if o["tmdb_id"] in rw:
             o["seen_by"] = rw[o["tmdb_id"]]
     out.sort(key=lambda x: x["score"], reverse=True)
+    # ?genre=Comedy: the best 15 of that genre from the whole pool, not just the Comedies among the overall top 15
+    genre = (request.args.get("genre") or "").strip()
+    if genre:
+        out = [o for o in out if genre in (o.get("genres") or [])]
     # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
     # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
     limit = group_limit(conn, group)
