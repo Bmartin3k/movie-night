@@ -897,3 +897,57 @@ def test_genre_gives_the_top_15_of_that_genre(client, people, add_movie, fake_tm
     got = [m["title"] for m in client.get(f"/api/suggestions?people={j}&genre=Horror").get_json()]
     assert got == ["H0", "H1", "H2"]
     assert client.get("/api/genres").get_json() == ["Comedy", "Horror"]
+
+
+# ---------------------------------------------------------------- sequels: suggest the earlier movie first
+def test_sequels_give_way_to_the_movie_before_them(client, people, add_movie, fake_tmdb, monkeypatch):
+    recs, _, _ = fake_tmdb
+    j, s = people["Jane"], people["Sam"]
+    parts = [(51, "Alien", "1979-05-25"), (52, "Aliens", "1986-07-18"), (53, "Alien 3", "1992-05-22")]
+    details = {pid: {"id": pid, "release_date": d, "genres": [], "belongs_to_collection": {"id": 900, "name": "Alien Collection"}}
+               for pid, _, d in parts}
+    collection_ = {"id": 900, "name": "Alien Collection", "parts": [
+        {"id": pid, "title": t, "release_date": d, "vote_count": 500, "vote_average": 7, "genre_ids": []} for pid, t, d in parts]}
+    faked = A.tmdb_get
+
+    def tmdb_get(path, params=None, cache=True):
+        bits = path.strip("/").split("/")
+        if bits == ["collection", "900"]:
+            return collection_
+        if len(bits) == 2 and bits[0] == "movie" and int(bits[1]) in details:
+            return details[int(bits[1])]
+        return faked(path, params, cache)
+    monkeypatch.setattr(A, "tmdb_get", tmdb_get)
+    add_movie(1, "Seed", {j: 10, s: 10})
+    recs[1] = [{"id": 53, "title": "Alien 3", "genre_ids": [], "vote_average": 6, "vote_count": 100},
+               {"id": 60, "title": "Other", "genre_ids": [], "vote_average": 7, "vote_count": 100}]
+    got = client.get(f"/api/suggestions?people={j}").get_json()
+    assert [m["title"] for m in got] == ["Alien", "Other"]           # nobody has seen Alien: start there
+    assert got[0]["instead_of"] == {"title": "Alien 3", "year": None}
+    add_movie(51, "Alien", {j: 8})
+    assert titles(client, [j]) == ["Aliens", "Other"]                # Jane has seen Alien: Aliens next
+    assert titles(client, [j, s]) == ["Alien", "Other"]              # Sam hasn't: Alien again (rewatch for Jane)
+    add_movie(52, "Aliens", {j: 8, s: 8})
+    alien = next(m for m in client.get("/api/movies").get_json() if m["tmdb_id"] == 51)
+    as_person(client, s)
+    assert client.put(f"/api/movies/{alien['id']}", json={"ratings": [{"person_id": s, "rating": 8}]}).status_code == 200
+    assert titles(client, [j, s]) == ["Alien 3", "Other"]           # both have seen 1 and 2: the sequel itself
+
+
+def test_fresh_only_gives_the_top_15_fresh(client, people, add_movie, fake_tmdb, monkeypatch):
+    recs, _, _ = fake_tmdb
+    monkeypatch.setattr(A, "SUGGEST_KEEP", 3)
+    monkeypatch.setattr(A, "OMDB_KEY", "test")
+    # 10-14 rotten, 20-23 fresh (RT 60%+, or Metascore 61+ with no Tomatometer), 30 no scores at all
+    scores = {**{100 + i: {"rt": "40%", "mc": 50} for i in range(5)},
+              20: {"rt": "95%", "mc": 40}, 21: {"rt": None, "mc": 70}, 22: {"rt": "60%", "mc": None},
+              23: {"rt": "88%", "mc": 80}, 30: {"rt": None, "mc": None}}
+    monkeypatch.setattr(A, "critic_scores", lambda tid: scores.get(tid, A.NO_SCORES))
+    j = people["Jane"]
+    add_movie(1, "Seed", {j: 10})
+    recs[1] = [{"id": t, "title": f"M{t}", "genre_ids": [], "vote_average": 7, "vote_count": 100}
+               for t in [100, 101, 102, 103, 104, 30, 20, 21, 22, 23]]
+    monkeypatch.setattr(A, "critic_factor", lambda s_, strength=1.0: 1.0)     # keep TMDB's order
+    assert titles(client, [j]) == ["M100", "M101", "M102"]
+    assert [m["title"] for m in client.get(f"/api/suggestions?people={j}&fresh=1").get_json()] == ["M20", "M21", "M22"]
+    assert [A.is_fresh(x) for x in ({"rt": "59%"}, {"rt": None, "mc": 61}, {"rt": None, "mc": None})] == [False, True, False]

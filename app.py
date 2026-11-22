@@ -1842,6 +1842,83 @@ SEEN_LOW = 4      # 2★ out of 10: a movie someone in the group rated lower isn
 
 
 # ---------------------------------------------------------------- suggestions: TMDB
+PREQUEL_CHECK = 90      # how far down the ranked list sequels get swapped for their earlier movies
+
+
+def is_fresh(s):
+    """🍅 Fresh: Rotten Tomatoes 60%+; with no Tomatometer, a Metascore of 61+ (Metacritic's "favorable")."""
+    rt = s.get("rt")
+    if rt:
+        try:
+            return int(str(rt).rstrip("%")) >= 60
+        except ValueError:
+            return False
+    return s.get("mc") is not None and s["mc"] >= 61
+
+
+def prequels_first(items, skip, seen, rw, limit, fresh=False):
+    """Swap each sequel in the top PREQUEL_CHECK for the earliest earlier movie in its series (TMDB collection) that
+    someone in the group hasn't seen. That movie takes the sequel's place and score, marked "instead_of". The
+    sequel is dropped instead when that earlier movie can't be suggested: dismissed, on the group's watchlist,
+    already in the list, or above the kid limit. Earlier movies everyone has seen (or someone in the group rated
+    under 2★) don't hold a sequel back; nor do obscure parts (under SERIES_MIN_VOTES votes). With `fresh`, an
+    earlier movie that isn't Fresh drops the sequel too."""
+    head, tail = items[:PREQUEL_CHECK], items[PREQUEL_CHECK:]
+
+    def details(it):
+        try:
+            return tmdb_get(f"/movie/{int(it['tmdb_id'])}") if it.get("tmdb_id") else None
+        except TMDBError:
+            return None
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        dets = list(pool.map(details, head))
+    allowed = set(CERT_ORDER[:CERT_ORDER.index(limit) + 1]) if limit else None
+    listed = {it.get("tmdb_id") for it in head}
+    out, ids, gm = [], set(), None
+    for it, d in zip(head, dets):
+        pick = it
+        cid = ((d or {}).get("belongs_to_collection") or {}).get("id")
+        mine = (d or {}).get("release_date") or ""
+        if cid and mine:
+            try:
+                col = tmdb_get(f"/collection/{cid}")
+            except TMDBError:
+                col = {}
+            earlier = sorted((p for p in col.get("parts", []) if p.get("id") and p["id"] != it["tmdb_id"]
+                              and (p.get("release_date") or "9") < mine and (p.get("vote_count") or 0) >= SERIES_MIN_VOTES),
+                             key=lambda p: p["release_date"])
+            first = next((p for p in earlier if p["id"] not in seen or p["id"] in rw), None)
+            if first:
+                if first["id"] in skip or first["id"] in ids:
+                    continue        # can't be suggested, or already shown higher up: no sequel either way
+                if first["id"] in listed:      # further down on its own: move it up to the sequel's place
+                    pick = dict(next(x for x in head if x.get("tmdb_id") == first["id"]),
+                                instead_of={"title": it["title"], "year": it.get("year")})
+                    ids.add(first["id"])
+                    out.append(pick)
+                    continue
+                if allowed and us_cert(first["id"]) not in allowed:
+                    continue
+                scores = critic_scores(first["id"]) if fresh else None
+                if fresh and not is_fresh(scores):
+                    continue
+                gm = gm if gm is not None else genre_map()
+                pick = slim(first, gm)
+                if scores:
+                    pick["rt"], pick["mc"] = scores.get("rt"), scores.get("mc")
+                pick.update(score=it["score"], because=it.get("because", []),
+                            instead_of={"title": it["title"], "year": it.get("year")})
+                if allowed:
+                    pick["cert"] = us_cert(first["id"])
+                if first["id"] in rw:
+                    pick["seen_by"] = rw[first["id"]]
+        if pick.get("tmdb_id") in ids:
+            continue
+        ids.add(pick.get("tmdb_id"))
+        out.append(pick)
+    return out + [t for t in tail if t.get("tmdb_id") not in ids]
+
+
 @app.get("/api/genres")
 def genres():
     """TMDB's movie genre names, for the Suggestions genre picker."""
@@ -1999,9 +2076,11 @@ def suggestions():
     if genre:
         out = [o for o in out if genre in (o.get("genres") or [])]
     # Kid limit first (keeping a margin), then the critics boost on what's left: well-reviewed movies
-    # move up, panned ones down. At most 150 lookups per list (cached a week) keeps OMDb use low.
+    # move up, panned ones down. At most 150 lookups per list (cached 2-13 weeks) keeps OMDb use low;
+    # 🍅 Fresh only (?fresh=1) looks at 300, then keeps just the Fresh ones, so it still finds 15.
+    fresh = request.args.get("fresh") == "1" and bool(OMDB_KEY)
     limit = group_limit(conn, group)
-    out = apply_cert_limit(out, limit, keep=150)
+    out = apply_cert_limit(out, limit, keep=300 if fresh else 150)
     if OMDB_KEY:
         strength = 0.5 if limit else 1.0          # half the boost when a kid is in the group
         top = [o for o in out if o.get("tmdb_id")]
@@ -2012,6 +2091,10 @@ def suggestions():
                 o["rt"], o["mc"] = s_["rt"], s_["mc"]
                 o["score"] = round(o["score"] * critic_factor(s_, strength), 2)
         out.sort(key=lambda x: x["score"], reverse=True)
+        if fresh:
+            out = [o for o in out if is_fresh(o)]
+    # a sequel when someone hasn't seen what comes before it: suggest the earlier movie in its place
+    out = prequels_first(out, skip, seen, rw, limit, fresh=fresh)
     # "Watch tonight" (in the library or on a service we pay for) and "School night" (2 hours or less) look
     # through all 150 for the top 15 that pass; either way the picks carry their runtime for the cards.
     return jsonify(pick_filter(out, SUGGEST_KEEP, tonight=request.args.get("tonight") == "1",

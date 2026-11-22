@@ -161,6 +161,7 @@ function suggestionCard(m, kind) {
   if (kind === "watchlist" && m.saved_for_names?.length)
     why = `<div class="loved">Saved for ${m.saved_for_names.length === state.people.length && state.people.length > 1 ? "everyone" : m.saved_for_names.map(esc).join(", ")}</div>` + why;
   else {
+    if (m.instead_of) why += `<div class="loved">Watch this first: it comes before <b>${esc(m.instead_of.title)}</b>${m.instead_of.year ? ` (${m.instead_of.year})` : ""}</div>`;
     if (m.series) why += `<div class="loved">Next in ${/^the /i.test(seriesName(m.series.name)) ? "" : "the "}<b>${esc(seriesName(m.series.name))}</b> series · seen ${m.series.seen} of ${m.series.total}</div>`;
     if (m.seen_by?.length) why += seenLine(m.seen_by);
     if (m.loved_by) why += `<div class="loved">${m.loved_by.map((l) => `${esc(l.name)} rated it ${fmtR(l.rating)}`).join(", ")}</div>`;
@@ -993,17 +994,15 @@ function renderSuggestions() {
   fb.setAttribute("aria-pressed", String(!!fresh));
   const all = state.suggestions || [];
   all.forEach((m) => { if (m.tmdb_id && "mc" in m && !(m.tmdb_id in rtCache)) rtCache[m.tmdb_id] = { rt: m.rt, mc: m.mc }; });
-  const unknown = fresh && all.some((m) => m.tmdb_id && !rtSettled(m.tmdb_id));
-  const list = all.filter((m) => !fresh || isFresh(m));
-  $("#suggest-grid").innerHTML = unknown ? `<div class="spinner">Checking Rotten Tomatoes scores…</div>` : list.map((m) => suggestionCard(m)).join("");
-  if (unknown) loadRT(all.map((m) => m.tmdb_id)).then(renderSuggestions);
-  else fillRT($("#suggest-grid"));
+  // 🍅 Fresh only is done by the server (the top 15 Fresh picks), like the genre
+  $("#suggest-grid").innerHTML = all.map((m) => suggestionCard(m)).join("");
+  fillRT($("#suggest-grid"));
   fillWhere($("#suggest-grid"));
   const empty = $("#suggest-empty");
   if (!state.status.tmdb) { empty.hidden = false; empty.textContent = "Add a TMDB API key in ⚙ Settings to get these."; }
   else if (state.suggestions && !all.length && g) { empty.hidden = false; empty.textContent = `No ${g} picks for ${groupLabel()}${tonightOn() || shortOn() ? " with these toggles" : ""}. Pick another genre or All genres.`; }
   else if (state.suggestions && !state.suggestions.length && !tonightOn() && !shortOn()) { empty.hidden = false; empty.textContent = `Nothing yet for ${groupLabel()}. Rate a few movies higher than 3 stars.`; }
-  else if (!unknown && all.length && !list.length && fresh) { empty.hidden = false; empty.textContent = "None of these are Fresh (Rotten Tomatoes 60%+, or Metacritic 61+ when there's no Tomatometer). Turn off 🍅 Fresh only to see them all."; }
+  else if (state.suggestions && !all.length && fresh) { empty.hidden = false; empty.textContent = `No Fresh picks for ${groupLabel()} right now (Rotten Tomatoes 60%+, or Metacritic 61+ when there's no Tomatometer). Turn off 🍅 Fresh only to see them all.`; }
   else if (state.suggestions && !all.length && (tonightOn() || shortOn())) { empty.hidden = false; empty.textContent = `Nothing for ${groupLabel()} fits ${[tonightOn() && "📺 Watch tonight", shortOn() && "🌙 School night"].filter(Boolean).join(" and ")} right now. Turn it off to see everything.`; }
   else empty.hidden = true;
   renderGenres();
@@ -1140,20 +1139,15 @@ async function fillRT(grid) {
   paintRT(grid);
   await loadRT([...grid.querySelectorAll(".card[data-tmdb]")].map((c) => c.dataset.tmdb), () => paintRT(grid));
 }
-// Fresh = 60%+ on Rotten Tomatoes; with no Tomatometer, a Metascore of 61+ (Metacritic's green "favorable") counts
-const isFresh = (m) => {
-  const s = rtCache[m.tmdb_id];
-  if (s?.rt) return parseInt(s.rt, 10) >= 60;
-  return s?.mc != null && Number(s.mc) >= 61;
-};
 async function loadSuggestions(force) {
   renderForChips();
   if (!state.status.tmdb) return renderSuggestions();
   loadGenres();
   const base = groupIds().join(",") + (tonightOn() ? "&tonight=1" : "") + (shortOn() ? "&short=1" : "");
-  const key = base + (state.genre ? "&genre=" + encodeURIComponent(state.genre) : "");
+  const key = base + (state.genre ? "&genre=" + encodeURIComponent(state.genre) : "")
+    + (state.status.rt && state.freshOnly ? "&fresh=1" : "");
   if (state.suggestions && !force && state.suggestionsKey === key) return renderSuggestions();
-  $("#suggest-grid").innerHTML = `<div class="spinner">Finding ${shortOn() ? "short " : ""}${state.genre ? esc(state.genre) + " " : ""}movies for ${esc(groupLabel())}${tonightOn() ? " you can watch tonight" : ""}…</div>`;
+  $("#suggest-grid").innerHTML = `<div class="spinner">Finding ${shortOn() ? "short " : ""}${state.status.rt && state.freshOnly ? "Fresh " : ""}${state.genre ? esc(state.genre) + " " : ""}movies for ${esc(groupLabel())}${tonightOn() ? " you can watch tonight" : ""}…</div>`;
   $("#suggest-empty").hidden = true;
   try {
     if (force || state.seriesKey !== base) loadSeries(base);     // the series row doesn't depend on the genre
@@ -1192,7 +1186,7 @@ state.freshOnly = lsGet("freshOnly") === "1";
 $("#fresh-only").addEventListener("click", () => {
   state.freshOnly = !state.freshOnly;
   lsSet("freshOnly", state.freshOnly ? "1" : "");
-  renderSuggestions();
+  loadSuggestions(false);
 });
 $("#refresh-suggest").addEventListener("click", () => loadSuggestions(true));
 // ---------- dismissed picks: bring back one at a time, or all
