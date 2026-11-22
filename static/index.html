@@ -15,6 +15,7 @@
     <button class="tab" data-tab="torate">To rate <span id="count-torate"></span></button>
     <button class="tab" data-tab="suggest">Suggestions</button>
     <button class="tab" data-tab="watchlist">Watchlist <span id="count-watchlist"></span></button>
+    <button class="tab" data-tab="stats">Stats</button>
   </nav>
   <button id="me-btn" class="ghost me" title="Who's rating on this device">👤 Who's rating?</button>
   <button id="settings-btn" class="ghost" title="Settings: API keys and connections" aria-label="Settings">⚙</button>
@@ -98,6 +99,12 @@
     </div>
     <div id="suggest-grid" class="grid"></div>
     <p id="suggest-empty" class="empty" hidden></p>
+    <div id="series-box" hidden>
+      <div class="toolbar"><h2>Finish the series</h2></div>
+      <p class="muted small">The next movie in a series someone selected has started, that none of them have seen yet
+        (series they rated under 3★ are left out).</p>
+      <div id="series-grid" class="grid"></div>
+    </div>
     <p class="muted small">The top 15, ranked from TMDB recommendations of every movie the selected people rated, using their average:
       4+★ pulls a movie's recommendations up, 2.5★ or less pushes them down. A movie shows while someone selected hasn't seen it,
       unless someone selected rated it under 2★. 📺 Watch tonight keeps only what's in your library or on your streaming services; 🌙 School night, only 2 hours or less.
@@ -117,6 +124,14 @@
     <p id="wl-kid-note" class="kid-note" hidden></p>
     <div id="watchlist-grid" class="grid"></div>
     <p id="watchlist-empty" class="empty" hidden>Save suggestions here with <b>☆ Save</b>.</p>
+  </section>
+
+  <section id="tab-stats" class="panel" hidden>
+    <div class="toolbar">
+      <h2 id="stats-title">Year in review</h2>
+      <select id="stats-year" aria-label="Year"></select>
+    </div>
+    <div id="stats-body"><div class="spinner">Adding it all up…</div></div>
   </section>
 </main>
 

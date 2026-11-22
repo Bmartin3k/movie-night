@@ -154,12 +154,14 @@ function watchedCard(m) {
 const fmtRuntime = (n) => n ? (n >= 60 ? `${Math.floor(n / 60)}h${n % 60 ? ` ${n % 60}m` : ""}` : `${n}m`) : "";
 // who in the group has already seen a pick that's still new to someone else, and how they rated it
 const seenLine = (who) => `<div class="seen-by">✓ ${who.map((r) => r.rating ? `${esc(r.name)} rated it ${fmtR(r.rating)}` : `${esc(r.name)} has seen it`).join(", ")}</div>`;
+const seriesName = (n) => String(n || "").replace(/\s+(Collection|Series|Saga|Trilogy)$/i, "");
 function suggestionCard(m, kind) {
   let why = "";
   if (m.reason) why = `<div class="why">${esc(m.reason)}</div>`;
   if (kind === "watchlist" && m.saved_for_names?.length)
     why = `<div class="loved">Saved for ${m.saved_for_names.length === state.people.length && state.people.length > 1 ? "everyone" : m.saved_for_names.map(esc).join(", ")}</div>` + why;
   else {
+    if (m.series) why += `<div class="loved">Next in ${/^the /i.test(seriesName(m.series.name)) ? "" : "the "}<b>${esc(seriesName(m.series.name))}</b> series · seen ${m.series.seen} of ${m.series.total}</div>`;
     if (m.seen_by?.length) why += seenLine(m.seen_by);
     if (m.loved_by) why += `<div class="loved">${m.loved_by.map((l) => `${esc(l.name)} rated it ${fmtR(l.rating)}`).join(", ")}</div>`;
     if (m.because && m.because.length) {
@@ -1083,11 +1085,29 @@ async function loadSuggestions(force) {
   if (state.suggestions && !force && state.suggestionsKey === key) return renderSuggestions();
   $("#suggest-grid").innerHTML = `<div class="spinner">Finding ${shortOn() ? "short " : ""}movies for ${esc(groupLabel())}${tonightOn() ? " you can watch tonight" : ""}…</div>`;
   try {
+    loadSeries(key);
     state.suggestions = await api("/suggestions?people=" + key); state.suggestionsKey = key;
     state.suggestions.forEach((m) => { if (m.where && m.tmdb_id) whereCache[m.tmdb_id] = { ...m.where, runtime: m.runtime }; });
   }
   catch (err) { state.suggestions = []; $("#suggest-empty").textContent = err.message; }
   renderSuggestions();
+}
+// ---------- Finish the series (TMDB collections the group has started)
+async function loadSeries(key) {
+  state.seriesKey = key;
+  try {
+    const list = await api("/series?people=" + key);
+    if (state.seriesKey !== key) return;          // the chips changed while it loaded
+    state.series = list;
+    list.forEach((m) => { if (m.where && m.tmdb_id) whereCache[m.tmdb_id] = { ...m.where, runtime: m.runtime }; });
+  } catch { state.series = []; }
+  renderSeries();
+}
+function renderSeries() {
+  const list = state.series || [];
+  $("#series-box").hidden = !list.length;
+  $("#series-grid").innerHTML = list.map((m) => suggestionCard(m)).join("");
+  fillRT($("#series-grid")); fillWhere($("#series-grid"));
 }
 $("#genre-filter").addEventListener("change", renderSuggestions);
 state.freshOnly = lsGet("freshOnly") === "1";
@@ -1149,7 +1169,7 @@ $("#claude-form").addEventListener("submit", async (e) => {
 });
 
 function findSuggestion(tmdb, title) {
-  for (const p of [claudeResults, state.suggestions || [], state.watchlist]) {
+  for (const p of [claudeResults, state.suggestions || [], state.series || [], state.watchlist]) {
     const m = p.find((x) => (tmdb && x.tmdb_id === tmdb) || (!tmdb && x.title === title));
     if (m) return m;
   }
@@ -1177,18 +1197,20 @@ async function onSuggestionClick(e) {
         await api("/watchlist", { method: "POST", body: { ...m, reason, people: groupIds() } }); m.saved = true;
       }
       btn.textContent = m.saved ? "★ Saved" : "☆ Save";
-      if (m.saved && card.closest("#suggest-grid, #claude-grid")) {   // it's on the watchlist now: off Suggestions
+      if (m.saved && card.closest("#suggest-grid, #claude-grid, #series-grid")) {   // it's on the watchlist now: off Suggestions
         card.classList.add("done");
         state.suggestions = (state.suggestions || []).filter((x) => x.tmdb_id !== tmdb);
+        state.series = (state.series || []).filter((x) => x.tmdb_id !== tmdb);
         const i = claudeResults.indexOf(m); if (i >= 0) claudeResults.splice(i, 1);
-        setTimeout(() => { renderSuggestions(); renderClaude(); }, 300);
+        setTimeout(() => { renderSuggestions(); renderClaude(); renderSeries(); }, 300);
       }
       loadWatchlist();
     } else if (btn.dataset.act === "dismiss") {
       await api("/dismiss", { method: "POST", body: { tmdb_id: tmdb, title: m.title } });
       state.suggestions = (state.suggestions || []).filter((x) => x.tmdb_id !== tmdb);
+      state.series = (state.series || []).filter((x) => x.tmdb_id !== tmdb);
       const i = claudeResults.indexOf(m); if (i >= 0) claudeResults.splice(i, 1);
-      renderSuggestions(); renderClaude();
+      renderSuggestions(); renderClaude(); renderSeries();
     } else if (btn.dataset.act === "radarr") {
       btn.disabled = true; btn.textContent = "Requesting…";
       try { const r = await api("/radarr/request", { method: "POST", body: { tmdb_id: tmdb } }); setRadarr(btn, r.state); }
@@ -1200,7 +1222,7 @@ async function onSuggestionClick(e) {
     }
   } catch (err) { alert(err.message); }
 }
-["#suggest-grid", "#claude-grid", "#watchlist-grid"].forEach((s) => $(s).addEventListener("click", onSuggestionClick));
+["#suggest-grid", "#claude-grid", "#series-grid", "#watchlist-grid"].forEach((s) => $(s).addEventListener("click", onSuggestionClick));
 
 // ---------- watchlist tab
 // Radarr button on watchlist cards: shows whether Radarr has it, or lets you request it
@@ -1424,12 +1446,90 @@ $("#delete-btn").addEventListener("click", async () => {
   dlg.close(); state.suggestionsKey = null; loadMovies();
 });
 
+
+// ---------- Stats: year in review + taste match
+const fmtHours = (min) => { const h = Math.round(min / 60); return `${h.toLocaleString()} hour${h === 1 ? "" : "s"}`; };
+const avgStars = (r) => `${(r / 2).toFixed(1).replace(/\.0$/, "")}★`;
+const ratingsLine = (rs) => rs.map((x) => `${esc(x.name)} ${fmtStars(x.rating)}`).join(" · ");
+function miniMovie(m, extra = "") {
+  const img = m.poster_path ? `<img src="${IMG}w92${esc(m.poster_path)}" alt="" loading="lazy">` : `<span class="ph"></span>`;
+  return `<li class="mini">${img}<div><div class="t">${esc(m.title)}${m.year ? ` <span class="muted">(${m.year})</span>` : ""}</div>
+    <div class="muted small">${extra || (m.ratings ? ratingsLine(m.ratings) : "")}</div></div></li>`;
+}
+async function loadStats() {
+  const year = $("#stats-year").value || lsGet("statsYear") || "";
+  try {
+    const st = await api("/stats" + (year ? `?year=${encodeURIComponent(year)}` : ""));
+    renderStats(st);
+  } catch (err) { $("#stats-body").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+}
+$("#stats-year").addEventListener("change", () => { lsSet("statsYear", $("#stats-year").value); loadStats(); });
+function renderStats(st) {
+  $("#stats-year").innerHTML = [...st.years.map((y) => `<option value="${y}">${y}</option>`), `<option value="all">All time</option>`].join("");
+  $("#stats-year").value = st.year;
+  $("#stats-title").textContent = st.year === "all" ? "All time" : `${st.year} in review`;
+  const when = st.year === "all" ? "" : ` in ${st.year}`;
+  if (!st.movies) { $("#stats-body").innerHTML = `<p class="empty">Nothing watched${when} yet.</p>`; return; }
+  const tiles = [
+    [st.movies.toLocaleString(), `movie${st.movies === 1 ? "" : "s"} watched${when}`],
+    [st.minutes ? fmtHours(st.minutes) : "–", st.runtime_known < st.movies ? `of movies (runtimes known for ${st.runtime_known} of ${st.movies})` : "of movies"],
+    st.top_genres[0] ? [esc(st.top_genres[0].name), `top genre · ${st.top_genres[0].count} movies`] : null,
+    st.longest ? [esc(st.longest.title), `longest · ${fmtRuntime(st.longest.runtime)}`] : null,
+  ].filter(Boolean).map(([v, l]) => `<div class="tile"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+
+  const peak = Math.max(...st.timeline.map((t) => t.count), 1);
+  const peakAt = st.timeline.findIndex((t) => t.count === peak);
+  const bars = st.timeline.map((t, i) => `<div class="bar" tabindex="0" data-tip="${esc(t.label)}: ${t.count} movie${t.count === 1 ? "" : "s"}">
+      ${i === peakAt ? `<span class="peak">${t.count}</span>` : ""}
+      <span class="fill" style="height:${(t.count / peak) * 100}%"></span><span class="lbl">${esc(t.label)}</span></div>`).join("");
+  const timeline = `<div class="stat-card wide"><h3>${st.year === "all" ? "Movies by year" : "Movies by month"}</h3>
+    <div class="bars${st.timeline.length > 12 ? " many" : ""}" role="img" aria-label="${esc(st.timeline.map((t) => `${t.label} ${t.count}`).join(", "))}">${bars}</div>
+    ${st.undated ? `<p class="muted small">${st.undated} watched movie${st.undated === 1 ? " has" : "s have"} no date, so ${st.undated === 1 ? "it isn't" : "they aren't"} counted by date.</p>` : ""}</div>`;
+
+  const ranked = st.people.filter((p) => p.rated >= 10).sort((a, b) => a.avg - b.avg);
+  const toughest = ranked.length > 1 ? ranked[0] : null, softest = ranked.length > 1 ? ranked.at(-1) : null;
+  const people = st.people.filter((p) => p.seen).map((p) => {
+    const tags = [p === toughest && `<span class="tag">🧐 toughest critic</span>`, p === softest && `<span class="tag">🥰 easiest to please</span>`].filter(Boolean).join(" ");
+    const twin = st.taste.find((t) => t.match != null && (t.a_id === p.id || t.b_id === p.id));
+    return `<div class="stat-card person">
+      <h3>${esc(pname(p.id))} ${tags}</h3>
+      <div class="nums"><span><b>${p.seen}</b> seen</span><span><b>${p.rated}</b> rated</span>
+        ${p.avg != null ? `<span><b>${avgStars(p.avg)}</b> average</span>` : ""}${p.fives ? `<span><b>${p.fives}</b> × 5★</span>` : ""}
+        ${p.minutes ? `<span><b>${fmtHours(p.minutes)}</b></span>` : ""}</div>
+      ${p.top_genres.length ? `<p class="small"><span class="muted">Watches most:</span> ${p.top_genres.map((g) => esc(g.name)).join(", ")}</p>` : ""}
+      ${p.fav_genre ? `<p class="small"><span class="muted">Rates highest:</span> ${esc(p.fav_genre.name)} (${avgStars(p.fav_genre.avg)} over ${p.fav_genre.count})</p>` : ""}
+      ${twin ? `<p class="small"><span class="muted">Taste twin:</span> ${esc(twin.a_id === p.id ? twin.b : twin.a)} (${twin.match}%)</p>` : ""}
+      ${p.favorites.length ? `<ul class="minis">${p.favorites.map((m) => miniMovie(m, fmtStars(m.ratings[0].rating))).join("")}</ul>`
+        : p.seen ? `<p class="muted small">No ratings${when} yet. ⚡ Quick rate on To rate is the fast way.</p>` : ""}
+    </div>`;
+  }).join("");
+
+  const few = st.taste.filter((t) => t.match == null);
+  const pairs = st.taste.filter((t) => t.match != null).map((t) => `<li class="pair"><div class="who">${esc(t.a)} &amp; ${esc(t.b)} <b>${t.match}%</b></div>
+        <div class="meter" role="meter" aria-valuenow="${t.match}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(t.a)} and ${esc(t.b)} taste match"><span style="width:${t.match}%"></span></div>
+        <div class="muted small">${t.count} both rated · ${t.exact} exactly the same</div>
+        ${t.agree ? `<div class="small">👍 Agree on <b>${esc(t.agree.title)}</b> (${ratingsLine(t.agree.ratings)})</div>` : ""}
+        ${t.split ? `<div class="small">🥊 Split on <b>${esc(t.split.title)}</b> (${ratingsLine(t.split.ratings)})</div>` : ""}</li>`).join("");
+  const taste = st.taste.length ? `<div class="stat-card wide"><h3>Taste match</h3>
+    <p class="muted small">How close two people's ratings are on movies they both rated, all time: 100% = always the same stars.</p>
+    <ul class="pairs">${pairs}</ul>
+    ${few.length ? `<p class="muted small">Not enough movies both rated yet (${st.taste_min} needed): ${few.map((t) => `${esc(t.a)} &amp; ${esc(t.b)}${t.count ? ` (${t.count})` : ""}`).join(", ")}.</p>` : ""}</div>` : "";
+
+  const lists = [
+    st.loved.length && `<div class="stat-card"><h3>Loved together</h3><ul class="minis">${st.loved.map((m) => miniMovie(m)).join("")}</ul></div>`,
+    st.argued.length && `<div class="stat-card"><h3>Argued about</h3><ul class="minis">${st.argued.map((m) => miniMovie(m)).join("")}</ul></div>`,
+  ].filter(Boolean).join("");
+
+  $("#stats-body").innerHTML = `<div class="tiles">${tiles}</div>${timeline}<div class="stat-grid">${people}</div>${taste}<div class="stat-grid">${lists}</div>`;
+}
+
 // ---------- tabs
 function showTab(name) {
   $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   $$(".panel").forEach((p) => (p.hidden = p.id !== "tab-" + name));
   if (name === "suggest") loadSuggestions(false);
   if (name === "watchlist") renderForChips();
+  if (name === "stats") loadStats();
   lsSet("tab", name);
 }
 $$(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab)));

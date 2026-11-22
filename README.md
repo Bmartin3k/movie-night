@@ -86,6 +86,14 @@ then get suggestions for one person or any group watching together.
   Because you liked… shows the top 15.
 - **🌙 School night** (Suggestions, Ask Claude and Watchlist): only movies 2 hours or shorter, by TMDB's runtime
   (movies with no runtime are left out). Every card shows its running time.
+- **Finish the series** (Suggestions, below "Because you liked…"): for series (TMDB collections) someone selected
+  has started, the next released movie none of them have seen. Series they rated under 3★ and parts TMDB users rate
+  under 5.5 are left out; kid limits, 📺 Watch tonight and 🌙 School night apply.
+- **📊 Stats**: a year in review (or all time) from Watched dates: movies and hours watched, movies by month, each
+  person's average, favorites, most-watched and highest-rated genres, toughest critic, what the household loved
+  together and argued about. **Taste match** compares every pair over all the movies both rated (5 or more):
+  100% means always the same stars. Runtimes and series come from TMDB details, which a background job fetches
+  for every Watched and To rate movie (4 a second, refreshed every 90 days; `TMDB_DETAILS_WARM=0` turns it off).
 
 ## Set up
 

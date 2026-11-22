@@ -775,3 +775,80 @@ def test_claude_is_told_about_school_night_and_checked(client, people, add_movie
     assert "school night" in prompts[0] and "120 minutes" in prompts[0]
     got = client.post("/api/claude-suggestions", json={"people": [j]}).get_json()
     assert [m["title"] for m in got] == ["Long", "Short"] and "school night" not in prompts[1]
+
+
+# ---------------------------------------------------------------- stats + taste match
+def put_cache(key, value):
+    conn = A.connect()
+    conn.execute("INSERT OR REPLACE INTO cache (key, value, fetched_at) VALUES (?,?,0)", (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
+
+
+def test_stats_year_in_review(client, people, add_movie):
+    j, s = people["Jane"], people["Sam"]
+    add_movie(1, "Up", {j: 10, s: 10}, watched_on="2026-03-05", genres=["Animation", "Family"])
+    add_movie(2, "Heat", {j: 9, s: 2}, watched_on="2026-03-20", genres=["Crime"])
+    add_movie(3, "Old", {j: 6}, watched_on="2025-07-01", genres=["Drama"])
+    put_cache("/movie/1?", {"id": 1, "runtime": 96})          # runtime on hand for one of the two
+    st = client.get("/api/stats?year=2026").get_json()
+    assert st["year"] == "2026" and st["years"] == ["2026", "2025"]
+    assert st["movies"] == 2 and st["minutes"] == 96 and st["runtime_known"] == 1
+    assert st["timeline"][2] == {"label": "Mar", "count": 2}
+    jane = next(p for p in st["people"] if p["name"] == "Jane")
+    assert jane["seen"] == 2 and jane["rated"] == 2 and jane["fives"] == 1 and jane["avg"] == 9.5
+    assert jane["favorites"][0]["title"] == "Up"
+    assert [m["title"] for m in st["loved"]] == ["Up", "Heat"]
+    assert [m["title"] for m in st["argued"]] == ["Heat"] and st["argued"][0]["spread"] == 7
+    assert client.get("/api/stats?year=all").get_json()["movies"] == 3
+    assert client.get("/api/stats?year=1999").get_json()["year"] == "all"
+
+
+def test_taste_match_needs_five_shared_ratings(client, people, add_movie):
+    j, s, a = people["Jane"], people["Sam"], people["Alex"]
+    for i, (rj, rs) in enumerate([(10, 10), (8, 8), (6, 4), (2, 10), (9, 9)]):
+        add_movie(100 + i, f"M{i}", {j: rj, s: rs, a: 5} if i < 2 else {j: rj, s: rs})
+    taste = client.get("/api/stats?year=all").get_json()["taste"]
+    js = next(t for t in taste if {t["a"], t["b"]} == {"Jane", "Sam"})
+    # diffs 0,0,2,8,0 -> mean 2 -> 100*(1-2/9) = 78
+    assert js["count"] == 5 and js["match"] == 78 and js["exact"] == 3
+    assert js["split"]["title"] == "M3" and js["agree"]["title"] == "M0"
+    ja = next(t for t in taste if {t["a"], t["b"]} == {"Jane", "Alex"})
+    assert ja["match"] is None and ja["count"] == 2
+    assert taste[0] is js                       # real matches first
+
+
+# ---------------------------------------------------------------- finish the series
+def collection(cid, name, parts):
+    put_cache(f"/collection/{cid}?", {"id": cid, "name": name, "parts": [
+        {"id": pid, "title": t, "release_date": d, "vote_count": 500, "vote_average": 7, "genre_ids": []} for pid, t, d in parts]})
+    for pid, *_ in parts:
+        put_cache(f"/movie/{pid}?", {"id": pid, "belongs_to_collection": {"id": cid, "name": name}})
+
+
+def test_series_suggests_the_next_unseen_part(client, people, add_movie, fake_tmdb):
+    j, s = people["Jane"], people["Sam"]
+    collection(10, "Toy Collection", [(1, "Toy 1", "1995-11-22"), (2, "Toy 2", "1999-11-24"),
+                                      (3, "Toy 3", "2010-06-18"), (4, "Toy 5", "2099-01-01")])
+    collection(20, "Meh Collection", [(5, "Meh 1", "2001-01-01"), (6, "Meh 2", "2003-01-01")])
+    add_movie(1, "Toy 1", {j: 9})
+    add_movie(5, "Meh 1", {j: 3})              # under 3★: don't push the sequel
+    got = client.get(f"/api/series?people={j}").get_json()
+    assert [m["title"] for m in got] == ["Toy 2"]
+    assert got[0]["series"] == {"id": 10, "name": "Toy Collection", "seen": 1, "total": 3, "avg": 9.0}
+    add_movie(2, "Toy 2", {s: 8})              # Sam saw part 2: still next for Jane alone, not for Jane + Sam
+    assert [m["title"] for m in client.get(f"/api/series?people={j}").get_json()] == ["Toy 2"]
+    assert [m["title"] for m in client.get(f"/api/series?people={j},{s}").get_json()] == ["Toy 3"]
+    client.post("/api/dismiss", json={"tmdb_id": 3, "title": "Toy 3"})
+    assert client.get(f"/api/series?people={j},{s}").get_json() == []     # unreleased part 4 never shows
+
+
+def test_series_respects_kid_limits(client, people, add_movie, fake_tmdb):
+    _, _, certs = fake_tmdb
+    a = people["Alex"]
+    collection(30, "Alien Collection", [(7, "Alien", "1979-05-25"), (8, "Aliens", "1986-07-18")])
+    add_movie(7, "Alien", {a: 8})
+    certs[8] = "R"
+    assert client.get(f"/api/series?people={a}").get_json() == []
+    certs[8] = "PG"
+    assert [m["title"] for m in client.get(f"/api/series?people={a}").get_json()] == ["Aliens"]

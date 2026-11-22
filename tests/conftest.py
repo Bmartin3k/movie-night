@@ -6,6 +6,7 @@ import tempfile
 _tmp = tempfile.mkdtemp(prefix="movie-night-tests-")
 os.environ["DB_PATH"] = os.path.join(_tmp, "movies.db")
 os.environ["BACKUP_KEEP"] = "0"          # no background backup thread during tests
+os.environ["TMDB_DETAILS_WARM"] = "0"    # nor the TMDB details one
 for k in ("TMDB_API_KEY", "OMDB_API_KEY", "ANTHROPIC_API_KEY", "EMBY_URL", "EMBY_API_KEY", "RADARR_URL", "RADARR_API_KEY"):
     os.environ[k] = ""
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

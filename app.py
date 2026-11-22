@@ -1969,6 +1969,292 @@ def suggestions():
                                short=request.args.get("short") == "1"))
 
 
+# ---------------------------------------------------------------- TMDB details on hand (runtimes, series)
+DETAILS_REFRESH = 90 * 24 * 3600     # the background job re-fetches a movie's details after this long
+SERIES_KEEP = 12                     # "Finish the series" cards
+SERIES_MIN_VOTES = 25                # parts with fewer TMDB votes (shorts, making-ofs) aren't suggested
+SERIES_MIN_SCORE = 5.5               # nor parts TMDB users rate under this (straight-to-video sequels)
+DETAIL_KEY = re.compile(r"/movie/(\d+)\?$")
+
+
+def cached_json(conn, key):
+    """A cached TMDB answer whatever its age (None if never fetched): stats and series use what's on hand
+    and never wait on TMDB for hundreds of movies; the background job keeps it filled."""
+    r = conn.execute("SELECT value FROM cache WHERE key=?", (key,)).fetchone()
+    return json.loads(r[0]) if r else None
+
+
+def known_details(conn, tids):
+    """{tmdb_id: TMDB /movie details} for the ids that have been fetched, whatever their age."""
+    tids = [int(t) for t in tids if t]
+    out = {}
+    for i in range(0, len(tids), 500):
+        keys = [f"/movie/{t}?" for t in tids[i:i + 500]]
+        for r in conn.execute(f"SELECT key, value FROM cache WHERE key IN ({','.join('?' * len(keys))})", keys):
+            out[int(DETAIL_KEY.match(r[0]).group(1))] = json.loads(r[1])
+    return out
+
+
+def household_tmdb_ids(conn):
+    return {r[0] for r in conn.execute("SELECT tmdb_id FROM movies WHERE tmdb_id IS NOT NULL "
+                                       "UNION SELECT tmdb_id FROM emby_queue WHERE tmdb_id IS NOT NULL")}
+
+
+def warm_details(pause=0.25):
+    """Fetch TMDB details for every movie the household has (Watched + To rate) that hasn't been fetched in
+    DETAILS_REFRESH, then each of their series ("collections"). Slow on purpose (4 a second)."""
+    if not TMDB_KEY:
+        return 0
+    conn = connect()
+    try:
+        tids = household_tmdb_ids(conn)
+        have = {}
+        for r in conn.execute("SELECT key, fetched_at FROM cache WHERE key LIKE '/movie/%?'"):
+            m = DETAIL_KEY.match(r[0])
+            if m:
+                have[int(m.group(1))] = r[1]
+    finally:
+        conn.close()
+    old, fetched = time.time() - DETAILS_REFRESH, 0
+    for t in sorted(tids):
+        if have.get(t, 0) >= old:
+            continue
+        try:
+            tmdb_get(f"/movie/{t}")
+            fetched += 1
+        except TMDBError:
+            pass
+        time.sleep(pause)
+    conn = connect()
+    try:
+        cols = {d["belongs_to_collection"]["id"] for d in known_details(conn, tids).values()
+                if (d.get("belongs_to_collection") or {}).get("id")}
+    finally:
+        conn.close()
+    for cid in sorted(cols):
+        try:
+            tmdb_get(f"/collection/{cid}")       # cached a week, so mostly cache hits
+        except TMDBError:
+            pass
+    return fetched
+
+
+def _details_background():
+    time.sleep(90)
+    while True:
+        try:
+            n = warm_details()
+            if n:
+                print(f"tmdb details: fetched {n}", flush=True)
+        except Exception as e:  # keep the loop alive whatever happens
+            print(f"tmdb details failed: {e}", flush=True)
+        time.sleep(6 * 3600)
+
+
+# ---------------------------------------------------------------- Finish the series
+@app.get("/api/series")
+def series():
+    """Next movies in series (TMDB collections) the group has started: for each collection where someone in the
+    group has seen a part, the earliest released part nobody in the group has seen. Skipped when the group's
+    ratings of the series average under 3★, or when the part is dismissed or on the group's watchlist. Kid
+    limits, 📺 Watch tonight and 🌙 School night apply like on Suggestions."""
+    if not TMDB_KEY:
+        return jsonify([])
+    conn = db()
+    group = selected_people(conn, request.args.get("people"))
+    if not group:
+        return jsonify([])
+    seen = seen_by(conn, group)
+    rated = {}
+    for r in conn.execute("SELECT m.tmdb_id, w.rating FROM movies m JOIN watches w ON w.movie_id=m.id "
+                          f"WHERE m.tmdb_id IS NOT NULL AND w.rating IS NOT NULL AND w.person_id IN ({','.join('?' * len(group))})",
+                          list(group)):
+        rated.setdefault(r[0], []).append(r[1])
+    skip = {r[0] for r in conn.execute("SELECT tmdb_id FROM dismissed")}
+    skip |= {tid for tid, ppl in saved_map(conn).items() if ppl & set(group)}
+    cols = {}
+    for tid, d in known_details(conn, seen).items():
+        c = d.get("belongs_to_collection") or {}
+        if c.get("id"):
+            cols.setdefault(c["id"], c.get("name") or "")
+    # series nobody fetched yet (just after setup): fetch them now, 8 at a time
+    missing = [cid for cid in cols if cached_json(conn, f"/collection/{cid}?") is None]
+    if missing:
+        def fetch(cid):
+            try:
+                tmdb_get(f"/collection/{cid}")
+            except TMDBError:
+                pass
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(fetch, missing))
+    today, gm = date.today().isoformat(), genre_map()
+    cands = []
+    for cid, name in cols.items():
+        col = cached_json(conn, f"/collection/{cid}?")
+        if not col:
+            continue
+        parts = sorted((p for p in col.get("parts", []) if (p.get("release_date") or "9") <= today and p.get("id")
+                        and (p["id"] in seen or (p.get("vote_count") or 0) >= SERIES_MIN_VOTES)),
+                       key=lambda p: p["release_date"])
+        done = [p for p in parts if p["id"] in seen]
+        todo = [p for p in parts if p["id"] not in seen and p["id"] not in skip
+                and (p.get("vote_average") or 0) >= SERIES_MIN_SCORE]
+        if len(parts) < 2 or not done or not todo:
+            continue
+        rs = [v for p in done for v in rated.get(p["id"], [])]
+        avg = sum(rs) / len(rs) if rs else None
+        if avg is not None and avg < 6:              # the group didn't care for it
+            continue
+        # rank: how much the group liked the series, how far into it they are, and how good the next part is
+        base = (avg if avg is not None else 5.5) + 2 * len(done) / len(parts)
+        for i, p in enumerate(todo):
+            rank = base + 0.5 * ((p.get("vote_average") or 6.5) - 6.5)
+            item = slim(p, gm)
+            item["series"] = {"id": cid, "name": col.get("name") or name, "seen": len(done), "total": len(parts),
+                              "avg": round(avg, 1) if avg is not None else None}
+            item["_rank"], item["_i"] = rank, i
+            cands.append(item)
+    cands.sort(key=lambda x: (x["series"]["id"], x["_i"]))
+    first = {}                                       # a series ranks by its next part (the first one shown)
+    for it in cands:
+        first.setdefault(it["series"]["id"], it["_rank"])
+    cands.sort(key=lambda x: (-first[x["series"]["id"]], x["series"]["id"], x["_i"]))
+    cands = apply_cert_limit(cands, group_limit(conn, group), keep=len(cands))
+    out, taken = [], set()
+    for it in cands:                                 # one card per series: the earliest that passed
+        if it["series"]["id"] in taken:
+            continue
+        taken.add(it["series"]["id"])
+        it.pop("_rank"), it.pop("_i")
+        out.append(it)
+    return jsonify(pick_filter(out, SERIES_KEEP, tonight=request.args.get("tonight") == "1",
+                               short=request.args.get("short") == "1"))
+
+
+# ---------------------------------------------------------------- stats: year in review + taste match
+TASTE_MIN = 5          # movies two people both rated before a taste match is shown
+
+
+def _mini(r, ratings=None):
+    d = {"tmdb_id": r["tmdb_id"], "title": r["title"], "year": r["year"], "poster_path": r["poster_path"]}
+    if ratings is not None:
+        d["ratings"] = ratings
+    return d
+
+
+@app.get("/api/stats")
+def stats():
+    """Year in review (?year=2026, or all) from Watched: dates are when the household watched it, runtimes from
+    TMDB details on hand. Taste match always uses every rating ever made, since a year is too few."""
+    conn = db()
+    years = sorted({r[0][:4] for r in conn.execute("SELECT watched_on FROM movies WHERE watched_on IS NOT NULL")
+                    if r[0][:4].isdigit()}, reverse=True)
+    year = request.args.get("year") or (str(date.today().year) if str(date.today().year) in years else "all")
+    if year != "all" and year not in years:
+        year = "all"
+    names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM people ORDER BY id")}
+    where = "" if year == "all" else "WHERE m.watched_on LIKE ?"
+    args = [] if year == "all" else [year + "-%"]
+    movies = {r["id"]: r for r in conn.execute(f"SELECT m.* FROM movies m {where}", args)}
+    watches = {}
+    for r in conn.execute("SELECT movie_id, person_id, rating FROM watches"):
+        watches.setdefault(r[0], []).append((r[1], r[2]))
+    det = known_details(conn, [m["tmdb_id"] for m in movies.values()])
+    mins = {mid: (det.get(m["tmdb_id"]) or {}).get("runtime") or 0 for mid, m in movies.items()}
+    genres = {mid: json.loads(m["genres"] or "[]") for mid, m in movies.items()}
+
+    def top_genres(mids, n=3):
+        c = {}
+        for mid in mids:
+            for g_ in genres[mid]:
+                c[g_] = c.get(g_, 0) + 1
+        return [{"name": k, "count": v} for k, v in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
+
+    if year == "all":
+        buckets = {y: 0 for y in sorted(years)}
+        for m in movies.values():
+            if m["watched_on"] and m["watched_on"][:4] in buckets:
+                buckets[m["watched_on"][:4]] += 1
+        timeline = [{"label": k, "count": v} for k, v in buckets.items()]
+    else:
+        counts = [0] * 12
+        for m in movies.values():
+            counts[int(m["watched_on"][5:7]) - 1] += 1
+        timeline = [{"label": date(2000, i + 1, 1).strftime("%b"), "count": c} for i, c in enumerate(counts)]
+
+    people_out = []
+    for pid, name in names.items():
+        mine = [(mid, rt) for mid in movies for p, rt in watches.get(mid, []) if p == pid]
+        rated_ = [(mid, rt) for mid, rt in mine if rt]
+        by_genre = {}
+        for mid, rt in rated_:
+            for g_ in genres[mid]:
+                by_genre.setdefault(g_, []).append(rt)
+        fav = sorted(((sum(v) / len(v), len(v), g_) for g_, v in by_genre.items() if len(v) >= 3), reverse=True)
+        best = sorted(rated_, key=lambda x: (-x[1], movies[x[0]]["watched_on"] or ""), reverse=False)[:3]
+        people_out.append({
+            "id": pid, "name": name, "seen": len(mine), "rated": len(rated_),
+            "minutes": sum(mins[mid] for mid, _ in mine),
+            "avg": round(sum(rt for _, rt in rated_) / len(rated_), 2) if rated_ else None,
+            "fives": sum(1 for _, rt in rated_ if rt == 10),
+            "top_genres": top_genres([mid for mid, _ in mine]),
+            "fav_genre": {"name": fav[0][2], "avg": round(fav[0][0], 2), "count": fav[0][1]} if fav else None,
+            "favorites": [_mini(movies[mid], [{"name": name, "rating": rt}]) for mid, rt in best],
+        })
+
+    shared = []
+    for mid, m in movies.items():
+        rs = [(names[p], rt) for p, rt in watches.get(mid, []) if rt and p in names]
+        if len(rs) >= 2:
+            vals = [rt for _, rt in rs]
+            shared.append((m, rs, sum(vals) / len(vals), max(vals) - min(vals)))
+    rl = lambda rs: [{"name": n, "rating": rt} for n, rt in sorted(rs)]
+    loved = sorted(shared, key=lambda x: (-x[2], x[3], x[0]["title"]))[:5]
+    argued = sorted((s_ for s_ in shared if s_[3] >= 4), key=lambda x: (-x[3], x[0]["title"]))[:5]
+    longest = max(movies, key=lambda mid: mins[mid], default=None)
+
+    # taste match: every pair, over every movie they both rated (all time)
+    allr = {}
+    for mid, ws in watches.items():
+        for p, rt in ws:
+            if rt and p in names:
+                allr.setdefault(p, {})[mid] = rt
+    titles = {r[0]: r for r in conn.execute("SELECT id, tmdb_id, title, year, poster_path FROM movies")}
+    pairs = []
+    ids = list(names)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            both = sorted(set(allr.get(a, {})) & set(allr.get(b, {})))
+            pr = {"a": names[a], "b": names[b], "a_id": a, "b_id": b, "count": len(both), "match": None}
+            if len(both) >= TASTE_MIN:
+                diffs = [abs(allr[a][mid] - allr[b][mid]) for mid in both]
+                pr["match"] = round(100 * (1 - sum(diffs) / len(diffs) / 9))
+                pr["exact"] = sum(1 for d in diffs if d == 0)
+                # the movie you agree on most (highest shared rating) and the one you split on most
+                agree = max(both, key=lambda mid: (-abs(allr[a][mid] - allr[b][mid]), allr[a][mid] + allr[b][mid]))
+                split = max(both, key=lambda mid: (abs(allr[a][mid] - allr[b][mid]), mid))
+                for k, mid in (("agree", agree), ("split", split)):
+                    pr[k] = _mini(titles[mid], [{"name": names[a], "rating": allr[a][mid]},
+                                                {"name": names[b], "rating": allr[b][mid]}])
+                if abs(allr[a][split] - allr[b][split]) < 4:
+                    pr.pop("split")            # nothing worth calling a disagreement
+            pairs.append(pr)
+    pairs.sort(key=lambda p: (p["match"] is None, -(p["match"] or 0), -p["count"]))
+
+    return jsonify({
+        "year": year, "years": years,
+        "movies": len(movies), "minutes": sum(mins.values()),
+        "runtime_known": sum(1 for v in mins.values() if v),
+        "undated": conn.execute("SELECT COUNT(*) FROM movies WHERE watched_on IS NULL").fetchone()[0],
+        "timeline": timeline, "top_genres": top_genres(movies, 5),
+        "longest": dict(_mini(movies[longest]), runtime=mins[longest]) if longest and mins[longest] else None,
+        "people": people_out,
+        "loved": [dict(_mini(m, rl(rs)), avg=round(avg, 2)) for m, rs, avg, _ in loved],
+        "argued": [dict(_mini(m, rl(rs)), spread=sp) for m, rs, _, sp in argued],
+        "taste": pairs, "taste_min": TASTE_MIN,
+    })
+
+
 # ---------------------------------------------------------------- suggestions: Claude
 CLAUDE_SCHEMA = {
     "type": "object",
@@ -2962,6 +3248,9 @@ def _media_background():
 
 if EMBY_SYNC_HOURS > 0:
     threading.Thread(target=_media_background, daemon=True, name="media-sync").start()
+
+if os.environ.get("TMDB_DETAILS_WARM", "1") != "0":
+    threading.Thread(target=_details_background, daemon=True, name="tmdb-details").start()
 
 
 if __name__ == "__main__":
